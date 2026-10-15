@@ -51,7 +51,7 @@ async function main() {
 
 Téléchargez le [DMG universel](${repository}/releases/download/${version}/OwlGood-${version}-macos-universal.dmg) et déplacez OwlGood dans Applications. Pour les versions intégrant Sparkle, utilisez **Paramètres → Mises à jour → Rechercher une mise à jour…**. Les vérifications automatiques sont quotidiennes ; l’installation et le redémarrage demandent votre accord.
 
-L’application et le DMG sont signés ad hoc, sans certificat Developer ID ni notarisation Apple. Cette signature ne supprime pas la quarantaine ajoutée par le navigateur. Si macOS bloque le premier lancement, utilisez Réglages Système → Confidentialité et sécurité → Ouvrir quand même. Les mises à jour et leur flux sont authentifiés séparément par Ed25519.`);
+L’application est signée ad hoc, sans certificat Developer ID ni notarisation Apple. Le conteneur DMG reste non signé, comme celui d’Ember. Cette signature ne supprime pas la quarantaine ajoutée par le navigateur. Si macOS bloque le premier lancement, utilisez Réglages Système → Confidentialité et sécurité → Ouvrir quand même. Les mises à jour et leur flux sont authentifiés séparément par Ed25519.`);
   } else if (command === "artifacts") {
     const base = `OwlGood-${version}-macos-universal`;
     const archive = await readFile(`release/${base}.app.tar.gz`);

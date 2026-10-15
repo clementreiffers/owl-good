@@ -32,8 +32,9 @@ ditto "$app" "$staging/dmg/OwlGood.app"
 ln -s /Applications "$staging/dmg/Applications"
 hdiutil create -volname OwlGood -srcfolder "$staging/dmg" -ov -format UDZO "release/$base.dmg"
 hdiutil verify "release/$base.dmg"
-codesign --force --sign - "release/$base.dmg"
-codesign --verify --strict "release/$base.dmg"
+# Leave the DMG unsigned, matching Tauri: ad hoc signing the container can
+# prevent Gatekeeper from opening it. The enclosed application remains signed.
+# https://github.com/tauri-apps/tauri/issues/12288
 tar -czf "release/$base.app.tar.gz" -C target/release OwlGood.app
 tar -xzf "release/$base.app.tar.gz" -C "$staging/extracted"
 codesign --verify --deep --strict "$staging/extracted/OwlGood.app"
