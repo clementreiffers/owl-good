@@ -644,4 +644,100 @@ mod tests {
             .unwrap();
         monitor.commands.send(Command::Shutdown).unwrap();
     }
+    /// Local repeatable measurement, intentionally not a machine-specific performance gate.
+    #[test]
+    #[ignore = "Opt-in local scheduler measurements for 1/10/50 services"]
+    fn local_scheduler_measurements() {
+        use std::sync::atomic::AtomicUsize;
+        for count in [1usize, 10, 50] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let stopped = Arc::new(AtomicBool::new(false));
+            let active = Arc::new(AtomicUsize::new(0));
+            let maximum = Arc::new(AtomicUsize::new(0));
+            let total = Arc::new(AtomicUsize::new(0));
+            let server_stop = stopped.clone();
+            let server_active = active.clone();
+            let server_max = maximum.clone();
+            let server_total = total.clone();
+            let server = thread::spawn(move || {
+                let mut handlers = Vec::new();
+                while !server_stop.load(Ordering::Relaxed) {
+                    match listener.accept() {
+                        Ok((mut socket, _)) => {
+                            server_total.fetch_add(1, Ordering::Relaxed);
+                            let active = server_active.clone();
+                            let maximum = server_max.clone();
+                            handlers.push(thread::spawn(move || {
+                                let current = active.fetch_add(1, Ordering::Relaxed) + 1;
+                                maximum.fetch_max(current, Ordering::Relaxed);
+                                let mut request = [0; 2048];
+                                socket
+                                    .set_read_timeout(Some(Duration::from_secs(2)))
+                                    .unwrap();
+                                let _ = socket.read(&mut request);
+                                thread::sleep(Duration::from_millis(20));
+                                let _ = socket.write_all(
+                                    b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\nOperational",
+                                );
+                                active.fetch_sub(1, Ordering::Relaxed);
+                            }));
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(1))
+                        }
+                        Err(e) => panic!("local server: {e}"),
+                    }
+                }
+                for handler in handlers {
+                    handler.join().unwrap();
+                }
+            });
+            let config = Config {
+                max_concurrent: 4,
+                sites: (0..count)
+                    .map(|i| Site {
+                        id: format!("local-{i}"),
+                        url: url.clone(),
+                        adapter: "regex".into(),
+                        ..Site::default()
+                    })
+                    .collect(),
+                ..Config::default()
+            };
+            let started = Instant::now();
+            let monitor = start(config);
+            let mut ids = HashSet::new();
+            for _ in 0..count {
+                let observation = monitor
+                    .observations
+                    .recv_timeout(Duration::from_secs(30))
+                    .unwrap();
+                assert_eq!(observation.status, Status::Healthy);
+                assert!(ids.insert(observation.site_id));
+            }
+            let elapsed = started.elapsed();
+            monitor.commands.send(Command::Shutdown).unwrap();
+            assert!(matches!(
+                monitor.observations.recv_timeout(Duration::from_secs(2)),
+                Err(mpsc::RecvTimeoutError::Disconnected)
+            ));
+            let before = total.load(Ordering::Relaxed);
+            thread::sleep(Duration::from_millis(150));
+            let after = total.load(Ordering::Relaxed);
+            stopped.store(true, Ordering::Relaxed);
+            server.join().unwrap();
+            assert_eq!(after, before);
+            assert_eq!(after, count);
+            assert_eq!(active.load(Ordering::Relaxed), 0);
+            assert!(maximum.load(Ordering::Relaxed) <= 4);
+            eprintln!(
+                "sites={count} collection_ms={} peak_requests={} new_requests_after_shutdown={} active_after_shutdown=0",
+                elapsed.as_millis(),
+                maximum.load(Ordering::Relaxed),
+                after - before
+            );
+        }
+    }
 }
