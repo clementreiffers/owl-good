@@ -129,10 +129,15 @@ Maximiser les tests unitaires utiles, sans gonfler leur nombre avec des tests de
 
 Mesurer sur une machine identifiée, avec 1, 10 et 50 services : taille du bundle, mémoire et CPU au repos/en refresh, latence d’ouverture du panneau. Fixer un budget après L0 et vérifier les régressions en L7.
 
-## 7. État initial et contrainte Git
+## 7. Mise en œuvre et historique Git
 
-Le socle actuel est un binaire Cargo en édition 2024, sans dépendances externes. Aucune fonctionnalité produit n’est encore implémentée.
+Le socle initial était un binaire Cargo en édition 2024 sans dépendances. Le développement autorisé ensuite se déroule dans un workspace à trois crates : `isdown-core` (incluant la configuration), `isdown-monitor` et `isdown-macos`. La configuration reste dans le cœur pour éviter une séparation supplémentaire tant que son périmètre reste compact. Le format retenu est JSON, éditable dans les préférences avancées.
 
-L’initialisation Git a échoué : l’environnement refuse la création de `.git` (chemin protégé en écriture). L’autorisation utilisateur est acquise ; c’est une restriction technique. Aucun dépôt, commit, branche ou worktree n’a donc été créé. Les deux agents consultés pour élaborer ce plan font uniquement de l’analyse sans édition.
+La restriction initiale d’écriture dans `.git` a été levée par l’utilisateur. Le dépôt est créé, les commits locaux sont autorisés et les worktrees sont opérationnels :
 
-Une fois l’écriture Git disponible, initialiser `main`, committer le socle validé, créer `integration` et les worktrees des lots prêts. Ne pas présenter les travaux de développement multi-agent comme démarrés avant cette étape.
+- `.worktrees/engine`, branche `feat/engine` : cœur, configuration et surveillance ; contrats communs développés ensemble.
+- `.worktrees/macos`, branche `feat/macos` : interface native, paramètres et notifications, en parallèle du moteur.
+- `.worktrees/integration`, branche `integration` : revue indépendante et fusion séquentielle.
+- `.worktrees/packaging`, branche `feat/packaging` : bundle macOS, scripts de vérification et documentation pris en charge par le coordinateur.
+
+Ce regroupement des lots conserve les dépendances du plan et exploite les deux créneaux de développement disponibles. Les agents d’analyse initiaux ont été remplacés lors du passage en accès complet pour que leurs nouvelles sessions héritent des permissions Git. Le réseau utilise libcurl et les services système macOS, sans runtime Tokio ni pile TLS Rust supplémentaire. Le statut réel de validation et les limites de la version livrée sont consignés dans le compte rendu de livraison et le README ; ce plan reste la référence du périmètre cible.
