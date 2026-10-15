@@ -1,4 +1,566 @@
-//! Monitoring worker interface (implemented in the engine worktree).
-// pub enum Command { Refresh, UpdateConfig(Config), Shutdown }
-// pub struct Monitor { pub commands: Sender<Command>, pub observations: Receiver<Observation> }
-// pub fn start(config: Config) -> Monitor
+//! Bounded background polling. AppKit never waits on network I/O.
+use isdown_core::{CompiledRules, Config, Observation, Site, Status};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, Sender},
+    },
+    thread,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
+
+// Configuration changes are rare; keeping the public channel API owned avoids a second allocation.
+#[allow(clippy::large_enum_variant)]
+pub enum Command {
+    Refresh,
+    UpdateConfig(Config),
+    Shutdown,
+}
+pub struct Monitor {
+    pub commands: Sender<Command>,
+    pub observations: Receiver<Observation>,
+}
+const MAX_BODY: usize = 2 * 1024 * 1024;
+const GITLAB_API: &str = "https://status.gitlab.com/1.0/status/5b36dc6502d06804c08349f7";
+fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+/// Starts one scheduler and at most `max_concurrent` blocking libcurl workers.
+/// Invalid updates are ignored; callers should validate before sending them.
+pub fn start(config: Config) -> Monitor {
+    let (commands, rx) = mpsc::channel();
+    let (tx, observations) = mpsc::channel();
+    thread::spawn(move || run(config, rx, tx));
+    Monitor {
+        commands,
+        observations,
+    }
+}
+struct Completion {
+    generation: u64,
+    observation: Observation,
+    retry_after: Option<u64>,
+}
+fn rules(config: &Config) -> HashMap<String, Arc<CompiledRules>> {
+    config
+        .sites
+        .iter()
+        .filter_map(|s| {
+            CompiledRules::new(&s.rules)
+                .ok()
+                .map(|r| (s.id.clone(), Arc::new(r)))
+        })
+        .collect()
+}
+fn run(mut config: Config, commands: Receiver<Command>, observations: Sender<Observation>) {
+    if isdown_core::validate_config(&config).is_err() {
+        return;
+    }
+    let (done_tx, done_rx) = mpsc::channel::<Completion>();
+    let mut compiled = rules(&config);
+    let mut generation = 0u64;
+    let mut active: HashMap<String, Arc<AtomicBool>> = HashMap::new();
+    let mut refresh_pending = HashSet::new();
+    let mut due: HashMap<String, Instant> = HashMap::new();
+    let mut errors: HashMap<String, u32> = HashMap::new();
+    loop {
+        // Process commands before completions so removed sites cannot reappear.
+        loop {
+            match commands.try_recv() {
+                Ok(Command::Shutdown) | Err(mpsc::TryRecvError::Disconnected) => {
+                    for cancel in active.values() {
+                        cancel.store(true, Ordering::Relaxed);
+                    }
+                    return;
+                }
+                Ok(Command::Refresh) => {
+                    due.clear();
+                    refresh_pending.extend(active.keys().cloned());
+                }
+                Ok(Command::UpdateConfig(next)) => {
+                    if isdown_core::validate_config(&next).is_ok() {
+                        for cancel in active.values() {
+                            cancel.store(true, Ordering::Relaxed);
+                        }
+                        refresh_pending.clear();
+                        config = next;
+                        compiled = rules(&config);
+                        generation = generation.wrapping_add(1);
+                        due.clear();
+                        errors.clear();
+                    }
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+            }
+        }
+        while let Ok(done) = done_rx.try_recv() {
+            active.remove(&done.observation.site_id);
+            if done.generation != generation {
+                continue;
+            }
+            let id = done.observation.site_id.clone();
+            let failures = errors.entry(id.clone()).or_default();
+            if done.observation.status == Status::Unknown {
+                *failures = failures.saturating_add(1);
+            } else {
+                *failures = 0;
+            }
+            let interval = config
+                .sites
+                .iter()
+                .find(|s| s.id == id)
+                .and_then(|s| s.interval_secs)
+                .unwrap_or(config.interval_secs);
+            let delay =
+                retry_delay(interval, *failures).max(done.retry_after.unwrap_or(0).min(86400));
+            due.insert(id.clone(), Instant::now() + Duration::from_secs(delay));
+            if refresh_pending.remove(&id) {
+                due.remove(&id);
+            }
+            if observations.send(done.observation).is_err() {
+                for cancel in active.values() {
+                    cancel.store(true, Ordering::Relaxed);
+                }
+                return;
+            }
+        }
+        if !config.paused {
+            for site in config.sites.iter().filter(|s| s.enabled) {
+                if active.len() >= config.max_concurrent {
+                    break;
+                }
+                if active.contains_key(&site.id)
+                    || due.get(&site.id).is_some_and(|d| *d > Instant::now())
+                {
+                    continue;
+                }
+                let Some(rule) = compiled.get(&site.id).cloned() else {
+                    continue;
+                };
+                let cancel = Arc::new(AtomicBool::new(false));
+                active.insert(site.id.clone(), cancel.clone());
+                let site = site.clone();
+                let tx = done_tx.clone();
+                let timeout = config.timeout_secs;
+                thread::spawn(move || {
+                    let (observation, retry_after) = check(&site, &rule, timeout, &cancel);
+                    let _ = tx.send(Completion {
+                        generation,
+                        observation,
+                        retry_after,
+                    });
+                });
+            }
+        }
+        // A short bounded sleep keeps command handling responsive without a busy loop.
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn retry_delay(interval: u64, failures: u32) -> u64 {
+    interval.saturating_mul(1u64 << failures.min(4)).min(86400)
+}
+
+#[derive(Debug)]
+struct FetchFailure {
+    message: String,
+    retry_after: Option<u64>,
+}
+impl From<String> for FetchFailure {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            retry_after: None,
+        }
+    }
+}
+impl From<&str> for FetchFailure {
+    fn from(message: &str) -> Self {
+        message.to_owned().into()
+    }
+}
+
+#[cfg(test)]
+fn fetch(url: &str, timeout: u64) -> Result<String, String> {
+    fetch_cancellable(url, timeout, &AtomicBool::new(false)).map_err(|e| e.message)
+}
+fn fetch_cancellable(url: &str, timeout: u64, cancel: &AtomicBool) -> Result<String, FetchFailure> {
+    let mut request = curl::easy::Easy::new();
+    request.url(url).map_err(|e| e.to_string())?;
+    request
+        .timeout(Duration::from_secs(timeout))
+        .map_err(|e| e.to_string())?;
+    request
+        .connect_timeout(Duration::from_secs(timeout.min(10)))
+        .map_err(|e| e.to_string())?;
+    request.follow_location(true).map_err(|e| e.to_string())?;
+    request.max_redirections(5).map_err(|e| e.to_string())?;
+    request
+        .useragent("isDown/0.1 (+macOS status monitor)")
+        .map_err(|e| e.to_string())?;
+    request.progress(true).map_err(|e| e.to_string())?;
+    let mut body = Vec::new();
+    let mut too_large = false;
+    let mut retry_after = None;
+    {
+        let mut transfer = request.transfer();
+        transfer
+            .header_function(|header| {
+                if let Ok(line) = std::str::from_utf8(header) {
+                    if line.starts_with("HTTP/") {
+                        retry_after = None;
+                    }
+                    if let Some((key, value)) = line.split_once(':')
+                        && key.eq_ignore_ascii_case("retry-after")
+                    {
+                        retry_after = value.trim().parse::<u64>().ok().or_else(|| {
+                            httpdate::parse_http_date(value.trim())
+                                .ok()
+                                .and_then(|date| date.duration_since(SystemTime::now()).ok())
+                                .map(|d| d.as_secs())
+                        });
+                    }
+                }
+                true
+            })
+            .map_err(|e| e.to_string())?;
+        transfer
+            .progress_function(|_, _, _, _| !cancel.load(Ordering::Relaxed))
+            .map_err(|e| e.to_string())?;
+        transfer
+            .write_function(|bytes| {
+                if body.len().saturating_add(bytes.len()) > MAX_BODY {
+                    too_large = true;
+                    return Ok(0);
+                }
+                body.extend_from_slice(bytes);
+                Ok(bytes.len())
+            })
+            .map_err(|e| e.to_string())?;
+        let result = transfer.perform();
+        drop(transfer);
+        if too_large {
+            return Err("Response exceeds 2 MiB".into());
+        }
+        result.map_err(|e| format!("Network/TLS error: {e}"))?;
+    }
+    let code = request.response_code().map_err(|e| e.to_string())?;
+    if !(200..300).contains(&code) {
+        return Err(FetchFailure {
+            message: format!("Status page HTTP {code} (service state unknown)"),
+            retry_after: if code == 429 || code == 503 {
+                retry_after
+            } else {
+                None
+            },
+        });
+    }
+    String::from_utf8(body).map_err(|_| "Response is not UTF-8".into())
+}
+fn check(
+    site: &Site,
+    rules: &CompiledRules,
+    timeout: u64,
+    cancel: &AtomicBool,
+) -> (Observation, Option<u64>) {
+    let url = if site.adapter == "gitlab" {
+        GITLAB_API
+    } else {
+        &site.url
+    };
+    let result = fetch_cancellable(url, timeout, cancel)
+        .and_then(|body| classify(&site.adapter, &body, rules).map_err(FetchFailure::from));
+    let (status, summary, retry_after) = match result {
+        Ok((status, summary)) => (status, summary, None),
+        Err(error) => (Status::Unknown, error.message, error.retry_after),
+    };
+    (
+        Observation {
+            site_id: site.id.clone(),
+            status,
+            summary,
+            checked_at: now(),
+        },
+        retry_after,
+    )
+}
+/// Interpret only current Status.io fields, never incident history or progression codes.
+pub fn classify(
+    adapter: &str,
+    body: &str,
+    rules: &CompiledRules,
+) -> Result<(Status, String), String> {
+    if adapter == "regex" {
+        let status = rules.classify(body);
+        return Ok((
+            status,
+            match status {
+                Status::Failed => "Failure rule matched",
+                Status::Warning => "Warning rule matched",
+                Status::Healthy => "Success rule matched",
+                Status::Unknown => "No rule matched",
+            }
+            .into(),
+        ));
+    }
+    if !matches!(adapter, "gitlab" | "statusio") {
+        return Err("Unsupported adapter".into());
+    }
+    let json: serde_json::Value =
+        serde_json::from_str(body).map_err(|e| format!("Invalid status JSON: {e}"))?;
+    let result = json.get("result").ok_or("Missing result")?;
+    let overall = result
+        .get("status_overall")
+        .ok_or("Missing current overall state")?;
+    let mut entries = vec![overall];
+    if let Some(components) = result.get("status").and_then(|s| s.as_array()) {
+        for component in components {
+            entries.push(component);
+            if let Some(containers) = component.get("containers").and_then(|v| v.as_array()) {
+                entries.extend(containers);
+            }
+        }
+    }
+    let mut statuses = Vec::new();
+    let mut labels = Vec::new();
+    for entry in entries {
+        let label = entry
+            .get("status")
+            .and_then(|v| v.as_str())
+            .ok_or("Missing current status label")?;
+        let code = entry
+            .get("status_code")
+            .and_then(|v| v.as_u64())
+            .ok_or("Missing current status code")?;
+        let status = if [100, 200, 300, 400, 500, 600].contains(&code) {
+            rules.classify(label)
+        } else {
+            Status::Unknown
+        };
+        statuses.push(Observation {
+            site_id: String::new(),
+            status,
+            summary: String::new(),
+            checked_at: 0,
+        });
+        if !labels.iter().any(|s| s == label) {
+            labels.push(label.to_string());
+        }
+    }
+    Ok((isdown_core::aggregate(&statuses, 0, 0), labels.join(" · ")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+    };
+    fn rules() -> CompiledRules {
+        CompiledRules::new(&isdown_core::Rules::default()).unwrap()
+    }
+    fn payload(code: u64, label: &str) -> String {
+        serde_json::json!({"result":{"status_overall":{"status":label,"status_code":code},"incidents":[{"status":"Service Disruption","status_code":500}]}}).to_string()
+    }
+    #[test]
+    fn statusio_all_codes() {
+        for (code, label, want) in [
+            (100, "Operational", Status::Healthy),
+            (200, "Maintenance", Status::Warning),
+            (300, "Degraded Performance", Status::Warning),
+            (400, "Partial Service Disruption", Status::Warning),
+            (500, "Service Disruption", Status::Failed),
+            (600, "Security Event", Status::Failed),
+            (700, "Operational", Status::Unknown),
+        ] {
+            assert_eq!(
+                classify("gitlab", &payload(code, label), &rules())
+                    .unwrap()
+                    .0,
+                want
+            );
+        }
+    }
+    #[test]
+    fn actual_gitlab_fixture() {
+        let body = include_str!("../tests/fixtures/gitlab-2026-10-15.json");
+        assert_eq!(
+            classify("gitlab", body, &rules()).unwrap().0,
+            Status::Failed
+        );
+    }
+    #[test]
+    fn malformed_and_unknown() {
+        assert!(classify("gitlab", "{}", &rules()).is_err());
+        assert!(classify("gitlab", "<html>", &rules()).is_err());
+        assert_eq!(
+            classify("gitlab", &payload(100, "Novel state"), &rules())
+                .unwrap()
+                .0,
+            Status::Unknown
+        );
+    }
+    fn server(response: String) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut request = [0; 2048];
+            let _ = socket.read(&mut request);
+            let _ = socket.write_all(response.as_bytes());
+        });
+        url
+    }
+    #[test]
+    fn transport_success_http_error_and_size_bound() {
+        let url = server("HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\nOperational".into());
+        assert_eq!(fetch(&url, 2).unwrap(), "Operational");
+        let url = server("HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\n\r\n".into());
+        assert!(fetch(&url, 2).unwrap_err().contains("429"));
+        let content = "x".repeat(MAX_BODY + 1);
+        let url = server(format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
+            content.len(),
+            content
+        ));
+        assert!(fetch(&url, 2).unwrap_err().contains("2 MiB"));
+    }
+    #[test]
+    fn worker_observation_and_shutdown() {
+        let url = server("HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\nOperational".into());
+        let mut config = Config::default();
+        config.sites[0].url = url;
+        config.sites[0].adapter = "regex".into();
+        let monitor = start(config);
+        let obs = monitor
+            .observations
+            .recv_timeout(Duration::from_secs(3))
+            .unwrap();
+        assert_eq!(obs.status, Status::Healthy);
+        monitor.commands.send(Command::Shutdown).unwrap();
+        assert!(
+            monitor
+                .observations
+                .recv_timeout(Duration::from_secs(1))
+                .is_err()
+        );
+    }
+    #[test]
+    fn paused_does_not_poll() {
+        let config = Config {
+            paused: true,
+            ..Config::default()
+        };
+        let monitor = start(config);
+        assert!(
+            monitor
+                .observations
+                .recv_timeout(Duration::from_millis(250))
+                .is_err()
+        );
+        monitor.commands.send(Command::Shutdown).unwrap();
+    }
+    #[test]
+    fn retry_cadence_is_bounded() {
+        assert_eq!(retry_delay(30, 0), 30);
+        assert_eq!(retry_delay(5, 2), 20);
+        assert_eq!(retry_delay(30, 100), 480);
+        assert_eq!(retry_delay(86400, 2), 86400);
+    }
+    #[test]
+    fn cancelling_request_aborts() {
+        let url = server("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".into());
+        assert!(fetch_cancellable(&url, 2, &AtomicBool::new(true)).is_err());
+    }
+    #[test]
+    fn removed_site_in_flight_never_reappears() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut buf = [0; 2048];
+            let _ = socket.read(&mut buf);
+            started_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            let _ = socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\nOperational");
+        });
+        let mut config = Config::default();
+        config.sites[0].adapter = "regex".into();
+        config.sites[0].url = url;
+        let monitor = start(config.clone());
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        config.sites.clear();
+        monitor
+            .commands
+            .send(Command::UpdateConfig(config))
+            .unwrap();
+        // Commands are consumed before completion, even when response is released immediately.
+        release_tx.send(()).unwrap();
+        assert!(
+            monitor
+                .observations
+                .recv_timeout(Duration::from_millis(400))
+                .is_err()
+        );
+        monitor.commands.send(Command::Shutdown).unwrap();
+    }
+    #[test]
+    fn custom_regex_and_historical_events() {
+        let custom = CompiledRules::new(&isdown_core::Rules {
+            fail: "^Operational$".into(),
+            warning: String::new(),
+            success: String::new(),
+        })
+        .unwrap();
+        assert_eq!(
+            classify("gitlab", &payload(100, "Operational"), &custom)
+                .unwrap()
+                .0,
+            Status::Failed
+        );
+        assert_eq!(
+            classify("gitlab", &payload(100, "Operational"), &rules())
+                .unwrap()
+                .0,
+            Status::Healthy
+        );
+        for (code, label, want) in [
+            (300, "Degraded", Status::Warning),
+            (400, "Partial outage", Status::Warning),
+            (500, "Major outage", Status::Failed),
+            (600, "Critical", Status::Failed),
+        ] {
+            assert_eq!(
+                classify("gitlab", &payload(code, label), &rules())
+                    .unwrap()
+                    .0,
+                want
+            );
+        }
+    }
+    #[test]
+    #[ignore = "Opt-in live contract verification: requires Internet"]
+    fn live_gitlab_contract() {
+        let result = fetch(GITLAB_API, 10).unwrap();
+        let (_, summary) = classify("gitlab", &result, &rules()).unwrap();
+        assert!(!summary.is_empty());
+    }
+    #[test]
+    fn retry_after_preserved_for_scheduler() {
+        let url = server(
+            "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 120\r\nContent-Length: 0\r\n\r\n"
+                .into(),
+        );
+        let error = fetch_cancellable(&url, 2, &AtomicBool::new(false)).unwrap_err();
+        assert_eq!(error.retry_after, Some(120));
+    }
+}

@@ -5,3 +5,6 @@ edition = "2024"
 
 [dependencies]
 isdown-core = { path = "../isdown-core" }
+curl = "0.4"
+serde_json = "1"
+httpdate = "1"
