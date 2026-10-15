@@ -72,6 +72,6 @@ mod tests {
     }
     #[test]
     fn rejects_non_http() {
-        assert!(favicon_url("file:///etc/passwd").is_none());
+        assert!(favicon_url("file:fixture.png").is_none());
     }
 }

@@ -92,11 +92,9 @@ OwlGood associe « owl » (chouette) et « all good ». Sa chouette vectorielle 
 
 ## Préférences et données
 
-La configuration JSON est enregistrée dans :
+La configuration JSON est enregistrée dans le dossier Application Support de l’utilisateur, sous OwlGood. Son emplacement est déterminé à l’exécution ; aucun chemin propre à une machine n’est requis.
 
-`~/Library/Application Support/OwlGood/config.json`
-
-Les crates et le binaire utilisent le nom `owlgood`, le bundle utilise `com.owlgood.app`, et les variables d’environnement sont préfixées `OWLGOOD_`. Au premier lancement, les anciennes préférences sont copiées vers ce dossier si aucune configuration OwlGood n’existe, sans supprimer la source ni écraser une configuration existante. Un chemin explicite via `OWLGOOD_CONFIG_PATH` désactive cette migration. Le changement d’identifiant macOS nécessite une nouvelle autorisation des notifications.
+Les crates et le binaire utilisent le nom `owlgood`, le bundle utilise `com.owlgood.app`, et les variables d’environnement sont préfixées `OWLGOOD_`. Seule la configuration OwlGood est chargée ; aucune migration d’une ancienne application n’est effectuée.
 
 Les réglages natifs regroupent Services, Apparence et Notifications dans une barre latérale, avec des interrupteurs macOS. Les règles de détection et la personnalisation détaillée sont repliées par défaut ; le menu des services donne accès à l’éditeur JSON. Un aperçu permet de comparer les thèmes et le rendu des icônes.
 
@@ -109,7 +107,7 @@ Les options couvrent les services, URL, règles, activation, intervalles, timeou
 Pour employer un autre fichier, notamment lors de tests :
 
 ```sh
-OWLGOOD_CONFIG_PATH=/tmp/owlgood-config.json target/release/OwlGood.app/Contents/MacOS/owlgood
+OWLGOOD_CONFIG_PATH=owlgood-config.json target/release/OwlGood.app/Contents/MacOS/owlgood
 ```
 
 Les notifications nécessitent l’autorisation macOS, demandée explicitement depuis les paramètres. Leur politique comporte confirmation, délai anti-répétition, avertissements et rétablissements configurables. Le refus de permission ne bloque pas la surveillance. Pour tester la livraison réelle, lancer le bundle `.app` ; le simple lancement du binaire par Cargo ne garantit pas une identité de notification valide.
