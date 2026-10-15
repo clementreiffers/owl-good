@@ -88,15 +88,15 @@ pub struct Observation {
 use std::{
     collections::HashSet,
     fs,
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
 };
 
 impl Default for Rules {
     fn default() -> Self {
         Self {
-        fail: r"(?im)^(?:Service Disruption|Security Event)$".into(),
-        warning: r"(?im)^(?:Partial Service Disruption|Degraded Performance|Maintenance|Under Maintenance|Planned Maintenance)$".into(),
+        fail: r"(?im)^(?:Service Disruption|Security Event|Major outage|Critical)$".into(),
+        warning: r"(?im)^(?:Partial Service Disruption|Degraded Performance|Degraded|Partial outage|Maintenance|Under Maintenance|Planned Maintenance)$".into(),
         success: r"(?im)^Operational$".into(),
     }
     }
@@ -227,6 +227,9 @@ pub fn aggregate(observations: &[Observation], now: u64, stale_after_secs: u64) 
     result
 }
 pub fn config_path() -> PathBuf {
+    if let Some(path) = std::env::var_os("ISDOWN_CONFIG_PATH").filter(|p| !p.is_empty()) {
+        return PathBuf::from(path);
+    }
     let base = std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
@@ -271,6 +274,11 @@ pub fn validate_config(c: &Config) -> Result<(), String> {
                 "Site URL must use HTTP(S), with a host and no embedded credentials".into(),
             );
         }
+        if site.adapter == "gitlab"
+            && (url.host_str() != Some("status.gitlab.com") || url.scheme() != "https")
+        {
+            return Err("GitLab adapter requires https://status.gitlab.com/; choose regex or statusio for other sites".into());
+        }
         if !matches!(site.adapter.as_str(), "gitlab" | "statusio" | "regex") {
             return Err(format!("Unknown adapter: {}", site.adapter));
         }
@@ -312,11 +320,15 @@ pub fn validate_config(c: &Config) -> Result<(), String> {
     Ok(())
 }
 pub fn load_config(path: &Path) -> Result<Config, String> {
-    let bytes = match fs::read(path) {
-        Ok(b) => b,
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Config::default()),
         Err(e) => return Err(e.to_string()),
     };
+    let mut bytes = Vec::new();
+    file.take(2 * 1024 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
     if bytes.len() > 2 * 1024 * 1024 {
         return Err("Configuration exceeds 2 MiB".into());
     }
