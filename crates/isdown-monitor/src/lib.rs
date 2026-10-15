@@ -595,4 +595,53 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn concurrency_bound_and_refresh_do_not_overlap_site() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let (accepted_tx, accepted_rx) = mpsc::channel();
+        thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut socket, _) = listener.accept().unwrap();
+                let (release_tx, release_rx) = mpsc::channel();
+                accepted_tx.send(release_tx).unwrap();
+                thread::spawn(move || {
+                    let mut request = [0; 2048];
+                    let _ = socket.read(&mut request);
+                    release_rx.recv().unwrap();
+                    let _ = socket
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\nOperational");
+                });
+            }
+        });
+        let mut config = Config {
+            max_concurrent: 1,
+            ..Config::default()
+        };
+        config.sites[0].url = url;
+        config.sites[0].adapter = "regex".into();
+        let monitor = start(config);
+        let release_first = accepted_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        monitor.commands.send(Command::Refresh).unwrap();
+        assert!(
+            accepted_rx
+                .recv_timeout(Duration::from_millis(250))
+                .is_err(),
+            "refresh overlapped the active request"
+        );
+        release_first.send(()).unwrap();
+        let release_second = accepted_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("manual refresh must run after completion");
+        release_second.send(()).unwrap();
+        monitor
+            .observations
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap();
+        monitor
+            .observations
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap();
+        monitor.commands.send(Command::Shutdown).unwrap();
+    }
 }
