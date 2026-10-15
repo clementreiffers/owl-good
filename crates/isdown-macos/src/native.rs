@@ -276,6 +276,7 @@ impl Delegate {
                 if cache.len() > 512 {
                     cache.clear();
                 }
+                cache.remove(&format!("mono:{key}"));
                 cache.insert(key, image);
                 self.ivars().render_signature.borrow_mut().clear();
             }
@@ -501,10 +502,9 @@ impl Delegate {
                 crate::icons::favicon_url(&site.url).unwrap_or_default()
             }
         });
-        if let Some(image) = self.ivars().icon_cache.borrow().get(&key) {
-            image.setTemplate(monochrome);
-            image.setSize(NSSize::new(size, size));
-            return Some(image.clone());
+        let cached = self.ivars().icon_cache.borrow().get(&key).cloned();
+        if let Some(image) = cached {
+            return Some(self.prepare_icon(image, &key, size, monochrome));
         }
         let gitlab = || {
             let image = NSImage::initWithSize(NSImage::alloc(), NSSize::new(24., 24.));
@@ -540,17 +540,40 @@ impl Delegate {
                     Some(&ns(&site.name)),
                 )
             })?;
-        image.setTemplate(monochrome);
-        image.setSize(NSSize::new(size, size));
         if site.icon_path.is_some() || site.adapter == "gitlab" {
             self.ivars()
                 .icon_cache
                 .borrow_mut()
-                .insert(key, image.clone());
+                .insert(key.clone(), image.clone());
         }
-        Some(image)
+        Some(self.prepare_icon(image, &key, size, monochrome))
     }
 
+    fn prepare_icon(
+        &self,
+        image: Retained<NSImage>,
+        key: &str,
+        size: f64,
+        monochrome: bool,
+    ) -> Retained<NSImage> {
+        let output = if monochrome {
+            let key = format!("mono:{key}");
+            let cached = self.ivars().icon_cache.borrow().get(&key).cloned();
+            cached.unwrap_or_else(|| {
+                let normalized = transparent_monochrome(&image).unwrap_or_else(|| image.clone());
+                self.ivars()
+                    .icon_cache
+                    .borrow_mut()
+                    .insert(key, normalized.clone());
+                normalized
+            })
+        } else {
+            image
+        };
+        output.setTemplate(monochrome);
+        output.setSize(NSSize::new(size, size));
+        output
+    }
     fn request_icons(&self) {
         let state = self.ivars().state.borrow();
         for site in &state.config.sites {
@@ -1415,4 +1438,72 @@ fn state_config_site_unchanged(old: &Config, site: &Site) -> bool {
             && previous.rules.warning == site.rules.warning
             && previous.rules.success == site.rules.success
     })
+}
+
+/// Normalize small icons once, preserving transparency and removing a white background.
+/// Sampling all four corners avoids stripping white detail from transparent artwork.
+fn transparent_monochrome(source: &NSImage) -> Option<Retained<NSImage>> {
+    let sample = NSImage::initWithSize(NSImage::alloc(), NSSize::new(64., 64.));
+    #[allow(deprecated)]
+    sample.lockFocus();
+    source.drawInRect(rect(0., 0., 64., 64.));
+    #[allow(deprecated)]
+    sample.unlockFocus();
+    let data = sample.TIFFRepresentation()?;
+    let bitmap = NSBitmapImageRep::imageRepWithData(&data)?;
+    let width = bitmap.pixelsWide();
+    let height = bitmap.pixelsHigh();
+    if width <= 0 || height <= 0 || width > 256 || height > 256 {
+        return None;
+    }
+    let color = |x, y| {
+        bitmap
+            .colorAtX_y(x, y)
+            .and_then(|c| c.colorUsingColorSpace(&NSColorSpace::sRGBColorSpace()))
+    };
+    let white = [
+        (0, 0),
+        (width - 1, 0),
+        (0, height - 1),
+        (width - 1, height - 1),
+    ]
+    .iter()
+    .all(|&(x, y)| {
+        color(x, y).is_some_and(|c| {
+            c.redComponent() > 0.9
+                && c.greenComponent() > 0.9
+                && c.blueComponent() > 0.9
+                && c.alphaComponent() > 0.9
+        })
+    });
+    let image = NSImage::initWithSize(NSImage::alloc(), NSSize::new(64., 64.));
+    #[allow(deprecated)]
+    image.lockFocus();
+    for y in 0..height {
+        for x in 0..width {
+            if let Some(c) = color(x, y) {
+                let alpha = c.alphaComponent()
+                    * if white {
+                        1. - c
+                            .redComponent()
+                            .min(c.greenComponent())
+                            .min(c.blueComponent())
+                    } else {
+                        1.
+                    };
+                if alpha > 0. {
+                    NSColor::colorWithSRGBRed_green_blue_alpha(0., 0., 0., alpha).setFill();
+                    NSRectFill(rect(
+                        x as f64 * 64. / width as f64,
+                        (height - y - 1) as f64 * 64. / height as f64,
+                        64. / width as f64,
+                        64. / height as f64,
+                    ));
+                }
+            }
+        }
+    }
+    #[allow(deprecated)]
+    image.unlockFocus();
+    Some(image)
 }
