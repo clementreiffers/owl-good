@@ -12,7 +12,7 @@ pub enum Status {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Rules {
     pub fail: String,
     pub warning: String,
@@ -20,7 +20,7 @@ pub struct Rules {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Site {
     pub id: String,
     pub name: String,
@@ -34,7 +34,7 @@ pub struct Site {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Appearance {
     pub theme: String,
     pub menu_title: String,
@@ -52,7 +52,7 @@ pub struct Appearance {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Notifications {
     pub enabled: bool,
     pub on_warning: bool,
@@ -63,7 +63,7 @@ pub struct Notifications {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub version: u32,
     pub interval_secs: u64,
@@ -471,5 +471,71 @@ mod tests {
         c.sites[0] = Site::default();
         c.appearance.font_size = f64::NAN;
         assert!(validate_config(&c).is_err());
+    }
+    #[test]
+    fn json_defaults_empty_list_and_typos() {
+        let c: Config = serde_json::from_str(r#"{"sites":[]}"#).unwrap();
+        assert_eq!(c.interval_secs, 30);
+        assert!(c.sites.is_empty());
+        validate_config(&c).unwrap();
+        assert!(serde_json::from_str::<Config>(r#"{"interval_sec":60}"#).is_err());
+        assert!(serde_json::from_str::<Config>(r#"{"appearance":{"them":"dark"}}"#).is_err());
+        let c: Config = serde_json::from_str(r#"{"version":999}"#).unwrap();
+        assert!(validate_config(&c).is_err());
+    }
+    #[test]
+    fn url_and_timing_bounds() {
+        for url in [
+            "https://user:password@example.com/",
+            "https://user@example.com/",
+            "https://",
+            "not a url",
+            "file:///etc/passwd",
+        ] {
+            let mut c = Config::default();
+            c.sites[0].adapter = "regex".into();
+            c.sites[0].url = url.into();
+            assert!(validate_config(&c).is_err(), "{url}");
+        }
+        let mut c = Config::default();
+        c.sites[0].url = "https://example.com/".into();
+        assert!(validate_config(&c).is_err());
+        for interval in [0, 4, 86401, u64::MAX] {
+            let c = Config {
+                interval_secs: interval,
+                ..Config::default()
+            };
+            assert!(validate_config(&c).is_err());
+        }
+        for timeout in [0, 121, u64::MAX] {
+            let c = Config {
+                timeout_secs: timeout,
+                ..Config::default()
+            };
+            assert!(validate_config(&c).is_err());
+        }
+        for concurrent in [0, 17, usize::MAX] {
+            let c = Config {
+                max_concurrent: concurrent,
+                ..Config::default()
+            };
+            assert!(validate_config(&c).is_err());
+        }
+        for interval in [5, 86400] {
+            let c = Config {
+                interval_secs: interval,
+                ..Config::default()
+            };
+            validate_config(&c).unwrap();
+        }
+    }
+    #[test]
+    fn truncated_and_oversized_config_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        fs::write(&path, b"{\"version\":").unwrap();
+        assert!(load_config(&path).is_err());
+        fs::write(&path, vec![b' '; 2 * 1024 * 1024 + 1]).unwrap();
+        assert!(load_config(&path).unwrap_err().contains("2 MiB"));
     }
 }
