@@ -276,6 +276,7 @@ impl Delegate {
                 if cache.len() > 512 {
                     cache.clear();
                 }
+                cache.remove(&format!("mono:{key}"));
                 cache.insert(key, image);
                 self.ivars().render_signature.borrow_mut().clear();
             }
