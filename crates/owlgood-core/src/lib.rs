@@ -83,10 +83,18 @@ pub struct Config {
 }
 
 #[derive(Debug, Clone)]
+pub struct AffectedComponent {
+    pub name: String,
+    pub status: Status,
+    pub provider_label: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct Observation {
     pub site_id: String,
     pub status: Status,
     pub summary: String,
+    pub components: Vec<AffectedComponent>,
     pub checked_at: u64,
 }
 
@@ -445,6 +453,7 @@ mod tests {
     #[test]
     fn aggregate_uncertainty() {
         let make = |s, t| Observation {
+            components: Vec::new(),
             site_id: "a".into(),
             status: s,
             summary: String::new(),

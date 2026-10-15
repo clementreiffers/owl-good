@@ -1,5 +1,5 @@
 //! Bounded background polling. AppKit never waits on network I/O.
-use owlgood_core::{CompiledRules, Config, Observation, Site, Status};
+use owlgood_core::{AffectedComponent, CompiledRules, Config, Observation, Site, Status};
 use std::{
     collections::{HashMap, HashSet},
     sync::{
@@ -274,17 +274,24 @@ fn check(
     } else {
         &site.url
     };
-    let result = fetch_cancellable(url, timeout, cancel)
-        .and_then(|body| classify(&site.adapter, &body, rules).map_err(FetchFailure::from));
-    let (status, summary, retry_after) = match result {
-        Ok((status, summary)) => (status, summary, None),
-        Err(error) => (Status::Unknown, error.message, error.retry_after),
+    let result = fetch_cancellable(url, timeout, cancel).and_then(|body| {
+        classify_detailed(&site.adapter, &body, rules).map_err(FetchFailure::from)
+    });
+    let (status, summary, components, retry_after) = match result {
+        Ok(result) => (result.status, result.summary, result.components, None),
+        Err(error) => (
+            Status::Unknown,
+            error.message,
+            Vec::new(),
+            error.retry_after,
+        ),
     };
     (
         Observation {
             site_id: site.id.clone(),
             status,
             summary,
+            components,
             checked_at: now(),
         },
         retry_after,
@@ -312,18 +319,33 @@ pub fn classify(
     body: &str,
     rules: &CompiledRules,
 ) -> Result<(Status, String), String> {
+    classify_detailed(adapter, body, rules).map(|result| (result.status, result.summary))
+}
+
+struct Classification {
+    status: Status,
+    summary: String,
+    components: Vec<AffectedComponent>,
+}
+
+fn classify_detailed(
+    adapter: &str,
+    body: &str,
+    rules: &CompiledRules,
+) -> Result<Classification, String> {
     if adapter == "regex" {
         let status = rules.classify(body);
-        return Ok((
+        return Ok(Classification {
             status,
-            match status {
+            summary: match status {
                 Status::Failed => "Failure rule matched",
                 Status::Warning => "Warning rule matched",
                 Status::Healthy => "Success rule matched",
                 Status::Unknown => "No rule matched",
             }
             .into(),
-        ));
+            components: Vec::new(),
+        });
     }
     if !matches!(adapter, "gitlab" | "statusio") {
         return Err("Unsupported adapter".into());
@@ -360,6 +382,7 @@ pub fn classify(
             Status::Unknown
         };
         statuses.push(Observation {
+            components: Vec::new(),
             site_id: String::new(),
             status,
             summary: String::new(),
@@ -369,7 +392,53 @@ pub fn classify(
             labels.push(label.to_string());
         }
     }
-    Ok((owlgood_core::aggregate(&statuses, 0, 0), labels.join(" · ")))
+    let mut affected = Vec::new();
+    if let Some(components) = result.get("status").and_then(|s| s.as_array()) {
+        for component in components {
+            // Use the worst affected current entry, including containers, without
+            // duplicating a component once per affected infrastructure provider.
+            let entries = std::iter::once(component).chain(
+                component
+                    .get("containers")
+                    .and_then(|v| v.as_array())
+                    .into_iter()
+                    .flatten(),
+            );
+            let mut worst = None;
+            for entry in entries {
+                let label = entry["status"].as_str().unwrap_or_default();
+                let code = entry["status_code"].as_u64().unwrap_or_default();
+                let status = if known_label(code, label) {
+                    rules.classify(label)
+                } else {
+                    Status::Unknown
+                };
+                if matches!(status, Status::Warning | Status::Failed)
+                    && worst.as_ref().is_none_or(|(_, previous)| {
+                        *previous != Status::Failed && status == Status::Failed
+                    })
+                {
+                    worst = Some((label, status));
+                }
+            }
+            if let Some((label, status)) = worst {
+                affected.push(AffectedComponent {
+                    name: component["name"]
+                        .as_str()
+                        .filter(|s| !s.trim().is_empty())
+                        .unwrap_or("Composant sans nom")
+                        .into(),
+                    status,
+                    provider_label: label.into(),
+                });
+            }
+        }
+    }
+    Ok(Classification {
+        status: owlgood_core::aggregate(&statuses, 0, 0),
+        summary: labels.join(" · "),
+        components: affected,
+    })
 }
 
 #[cfg(test)]
@@ -381,6 +450,78 @@ mod tests {
     };
     fn rules() -> CompiledRules {
         CompiledRules::new(&owlgood_core::Rules::default()).unwrap()
+    }
+    #[test]
+    fn affected_components_from_gitlab_fixture() {
+        let result = classify_detailed(
+            "gitlab",
+            include_str!("../tests/fixtures/gitlab-2026-10-15.json"),
+            &rules(),
+        )
+        .unwrap();
+        assert_eq!(
+            result
+                .components
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Website", "API", "GitLab Customers Portal"]
+        );
+        assert!(
+            result
+                .components
+                .iter()
+                .all(|c| c.status == Status::Failed && c.provider_label == "Service Disruption")
+        );
+    }
+
+    #[test]
+    fn component_details_include_current_children_once_and_clear_on_recovery() {
+        let mut body = serde_json::json!({"result": {
+            "status_overall": {"status": "Operational", "status_code": 100},
+            "status": [
+                {"name": "API", "status": "Operational", "status_code": 100, "containers": [
+                    {"name": "A", "status": "Degraded Performance", "status_code": 300},
+                    {"name": "B", "status": "Service Disruption", "status_code": 500}
+                ]},
+                {"name": "Web", "status": "Degraded Performance", "status_code": 300},
+                {"name": "CI", "status": "Maintenance", "status_code": 200},
+                {"name": "Registry", "status": "Operational", "status_code": 100}
+            ],
+            "incidents": [{"name": "Old incident", "status": "Service Disruption", "status_code": 500}]
+        }});
+        let result = classify_detailed("statusio", &body.to_string(), &rules()).unwrap();
+        assert_eq!(
+            result
+                .components
+                .iter()
+                .map(|c| (c.name.as_str(), c.status))
+                .collect::<Vec<_>>(),
+            [
+                ("API", Status::Failed),
+                ("Web", Status::Warning),
+                ("CI", Status::Warning)
+            ]
+        );
+        for component in body["result"]["status"].as_array_mut().unwrap() {
+            component["status"] = "Operational".into();
+            component["status_code"] = 100.into();
+            component["containers"] = serde_json::json!([]);
+        }
+        let recovered = classify_detailed("statusio", &body.to_string(), &rules()).unwrap();
+        assert_eq!(recovered.status, Status::Healthy);
+        assert!(recovered.components.is_empty());
+    }
+
+    #[test]
+    fn missing_components_and_regex_have_no_invented_details() {
+        for (adapter, body) in [
+            ("gitlab", payload(500, "Service Disruption")),
+            ("regex", "Service Disruption".into()),
+        ] {
+            let result = classify_detailed(adapter, &body, &rules()).unwrap();
+            assert!(result.components.is_empty());
+        }
     }
     fn payload(code: u64, label: &str) -> String {
         serde_json::json!({"result":{"status_overall":{"status":label,"status_code":code},"incidents":[{"status":"Service Disruption","status_code":500}]}}).to_string()

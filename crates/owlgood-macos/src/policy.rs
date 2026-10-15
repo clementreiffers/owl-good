@@ -49,6 +49,36 @@ pub(crate) fn status_label(status: Status) -> &'static str {
     }
 }
 
+/// Only fresh, active failures supplied by the panel should expose component details.
+pub(crate) fn component_details(
+    status: Status,
+    observation: Option<&owlgood_core::Observation>,
+) -> String {
+    if !matches!(status, Status::Warning | Status::Failed) {
+        return String::new();
+    }
+    let Some(observation) = observation.filter(|o| !o.components.is_empty()) else {
+        return "Détail des composants indisponible".into();
+    };
+    observation
+        .components
+        .iter()
+        .map(|component| {
+            let label = match component.provider_label.to_ascii_lowercase().as_str() {
+                "operational" => status_label(component.status),
+                "maintenance" | "under maintenance" | "planned maintenance" => "maintenance",
+                "degraded performance" | "degraded" => "dégradation",
+                "partial service disruption" | "partial outage" => "interruption partielle",
+                "service disruption" | "major outage" => "interruption de service",
+                "security event" | "critical" => "incident de sécurité",
+                _ => status_label(component.status),
+            };
+            format!("• {} — {label}", component.name)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 pub(crate) fn rgb(hex: &str) -> Option<(f64, f64, f64)> {
     let value = hex.strip_prefix('#')?;
     if value.len() != 6 || !value.is_ascii() {
@@ -122,6 +152,39 @@ impl NotificationState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn component_details_translate_all_entries_and_hide_inactive_results() {
+        let observation = owlgood_core::Observation {
+            site_id: "service".into(),
+            status: Status::Failed,
+            summary: String::new(),
+            checked_at: 0,
+            components: [
+                ("API", "Service Disruption", Status::Failed),
+                ("Web", "Degraded Performance", Status::Warning),
+                ("CI", "Maintenance", Status::Warning),
+                ("Registry", "Partial outage", Status::Failed),
+            ]
+            .into_iter()
+            .map(|(name, label, status)| owlgood_core::AffectedComponent {
+                name: name.into(),
+                status,
+                provider_label: label.into(),
+            })
+            .collect(),
+        };
+        assert_eq!(
+            component_details(Status::Failed, Some(&observation)),
+            "• API — interruption de service\n• Web — dégradation\n• CI — maintenance\n• Registry — interruption partielle"
+        );
+        for status in [Status::Healthy, Status::Unknown] {
+            assert!(component_details(status, Some(&observation)).is_empty());
+        }
+        assert_eq!(
+            component_details(Status::Warning, None),
+            "Détail des composants indisponible"
+        );
+    }
     fn options() -> Notifications {
         Notifications {
             enabled: true,

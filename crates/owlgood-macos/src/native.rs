@@ -1,5 +1,5 @@
 //! AppKit bridge. Cocoa objects and target/action callbacks are main-thread only.
-use crate::policy::{NotificationState, ServiceRowLayout, rgb, status_label};
+use crate::policy::{NotificationState, ServiceRowLayout, component_details, rgb, status_label};
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject, Bool, ProtocolObject};
@@ -1039,6 +1039,7 @@ impl Delegate {
             .filter(|s| s.enabled)
             .map(|s| {
                 state.latest.get(&s.id).cloned().unwrap_or(Observation {
+                    components: Vec::new(),
                     site_id: s.id.clone(),
                     status: Status::Unknown,
                     summary: String::new(),
@@ -1161,7 +1162,56 @@ impl Delegate {
         let layout = ServiceRowLayout::new(a);
         let row_height = layout.row_height;
         let icon_size = a.icon_size;
-        let content_height = (config.sites.len().max(1) as f64 * row_height).max(44.);
+        let left = if a.show_site_icons {
+            24. + icon_size
+        } else {
+            16.
+        };
+        let text_width = width - left - if a.show_site_icons { 12. } else { 28. };
+        // Measure wrapped component lists before positioning rows. Each service
+        // retains its compact header, with its own variable-height details below.
+        let details: Vec<_> = config
+            .sites
+            .iter()
+            .map(|site| {
+                let observation = state.latest.get(&site.id);
+                let status = if config.paused
+                    || !site.enabled
+                    || observation.is_some_and(|o| {
+                        now().saturating_sub(o.checked_at) > config.stale_after_secs
+                    }) {
+                    Status::Unknown
+                } else {
+                    observation.map_or(Status::Unknown, |o| o.status)
+                };
+                let text = component_details(status, observation);
+                if text.is_empty() {
+                    return None;
+                }
+                let field = NSTextField::wrappingLabelWithString(&ns(&text), self.mtm());
+                field.setFont(Some(&NSFont::systemFontOfSize(layout.detail_size)));
+                field.setTextColor(Some(&NSColor::secondaryLabelColor()));
+                field.setMaximumNumberOfLines(0);
+                field.setPreferredMaxLayoutWidth(text_width);
+                let height = field
+                    .cell()
+                    .map_or(layout.detail_height, |cell| {
+                        cell.cellSizeForBounds(rect(0., 0., text_width, 1_000_000.))
+                            .height
+                            .ceil()
+                    })
+                    .max(layout.detail_height);
+                field.setFrame(rect(left, 0., text_width, height));
+                Some((field, text, height + 4.))
+            })
+            .collect();
+        let content_height = (config.sites.len() as f64 * row_height
+            + details
+                .iter()
+                .flatten()
+                .map(|(_, _, height)| height)
+                .sum::<f64>())
+        .max(44.);
         let viewport = content_height.min(480.);
         let action_row_height = 22.;
         let actions_height = 4. * action_row_height + 8.;
@@ -1235,8 +1285,13 @@ impl Delegate {
         let checked_full = NSDateFormatter::new();
         checked_full.setTimeZone(Some(&NSTimeZone::localTimeZone()));
         checked_full.setDateFormat(Some(&ns("dd/MM/yyyy HH:mm:ss z")));
+        let mut row_top = content_height;
         for (index, site) in config.sites.iter().enumerate() {
-            let y = content_height - (index + 1) as f64 * row_height;
+            let extra_height = details[index].as_ref().map_or(0., |(_, _, height)| *height);
+            let full_height = row_height + extra_height;
+            let row_bottom = row_top - full_height;
+            let y = row_top - row_height;
+            row_top = row_bottom;
             let observation = state.latest.get(&site.id);
             let stale = observation
                 .is_some_and(|o| now().saturating_sub(o.checked_at) > config.stale_after_secs);
@@ -1274,7 +1329,11 @@ impl Delegate {
             name.setFont(Some(&NSFont::systemFontOfSize_weight(a.font_size, 0.23)));
             name.setToolTip(Some(&ns(&site.name)));
             list.addSubview(&name);
-            let row_action = self.button("", rect(8., y, width - 16., row_height), sel!(openSite:));
+            let row_action = self.button(
+                "",
+                rect(8., row_bottom, width - 16., full_height),
+                sel!(openSite:),
+            );
             row_action.setBordered(false);
             row_action.setTag(index as isize);
             row_action.setToolTip(Some(&ns(&site.url)));
@@ -1323,7 +1382,10 @@ impl Delegate {
                     )
                 },
             );
-            let detail = format!("{summary}\n{last_check_full}");
+            let component_text = details[index]
+                .as_ref()
+                .map_or("", |(_, text, _)| text.as_str());
+            let detail = format!("{summary}\n{component_text}\n{last_check_full}");
             let visible_status = if !site.enabled {
                 "Désactivé"
             } else if config.paused {
@@ -1347,9 +1409,13 @@ impl Delegate {
             field.setTextColor(Some(&NSColor::secondaryLabelColor()));
             field.setToolTip(Some(&ns(&detail)));
             list.addSubview(&field);
+            if let Some((field, _, _)) = &details[index] {
+                field.setFrameOrigin(NSPoint::new(left, row_bottom + 4.));
+                list.addSubview(field);
+            }
             row_action.setAccessibilityLabel(Some(&ns(&format!(
-                "{} — {}. {}. Ouvrir la page de statut",
-                site.name, visible_status, last_check_full
+                "{} — {}. {}. {}. Ouvrir la page de statut",
+                site.name, visible_status, component_text, last_check_full
             ))));
             // Keep a single full-row hit target above the decorative labels and icon.
             row_action.setToolTip(Some(&ns(&format!(
@@ -1359,6 +1425,7 @@ impl Delegate {
             list.addSubview(&row_action);
         }
         scroll.setDocumentView(Some(&list));
+        list.scrollPoint(NSPoint::new(0., (content_height - viewport).max(0.)));
         root.addSubview(&scroll);
         let panel = self.glass(
             &root,
