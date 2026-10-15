@@ -59,4 +59,5 @@ jobs:
       - name: Publish semantic release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWLGOOD_UPDATER_PRIVATE_KEY: ${{ secrets.OWLGOOD_UPDATER_PRIVATE_KEY }}
         run: npm run release

@@ -9,6 +9,7 @@ if [ "$(uname -s)" != Darwin ]; then
     exit 1
 fi
 
+bash "$ROOT/scripts/fetch-sparkle.sh"
 export MACOSX_DEPLOYMENT_TARGET=13.0
 if [ "${1:-}" = '--universal' ]; then
     cargo build --release --locked --target aarch64-apple-darwin
@@ -23,15 +24,26 @@ else
     BINARY="$ROOT/target/release/owlgood"
 fi
 APP="$ROOT/target/release/OwlGood.app"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
+ditto "$ROOT/target/sparkle-sdk/Sparkle.framework" "$APP/Contents/Frameworks/Sparkle.framework"
+cp "$ROOT/target/sparkle-sdk/LICENSE" "$APP/Contents/Resources/Sparkle-LICENSE"
 cp "$BINARY" "$APP/Contents/MacOS/owlgood"
 cp "$ROOT/resources/Info.plist" "$APP/Contents/Info.plist"
 if [ -n "${OWLGOOD_RELEASE_VERSION:-}" ]; then
     /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $OWLGOOD_RELEASE_VERSION" "$APP/Contents/Info.plist"
     /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $OWLGOOD_RELEASE_VERSION" "$APP/Contents/Info.plist"
 fi
+public_key=$(cat "$ROOT/resources/updater-public-key.txt")
+/usr/libexec/PlistBuddy -c "Add :SUPublicEDKey string $public_key" "$APP/Contents/Info.plist"
+# Sign nested Sparkle helpers before the containing framework and host app.
+framework="$APP/Contents/Frameworks/Sparkle.framework/Versions/B"
+codesign --force --sign - "$framework/XPCServices/Downloader.xpc"
+codesign --force --sign - "$framework/XPCServices/Installer.xpc"
+codesign --force --sign - "$framework/Updater.app"
+codesign --force --sign - "$framework/Autoupdate"
+codesign --force --sign - "$APP/Contents/Frameworks/Sparkle.framework"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 plutil -lint "$APP/Contents/Info.plist"
 codesign --force --sign - --identifier com.owlgood.app "$APP"
-codesign --verify --strict "$APP"
+codesign --verify --deep --strict "$APP"
 echo "$APP"

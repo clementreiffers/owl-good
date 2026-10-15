@@ -125,6 +125,7 @@ struct Ivars {
     notification_delegate: OnceCell<Retained<NotificationDelegate>>,
     icon_cache: RefCell<HashMap<String, Retained<NSImage>>>,
     render_signature: RefCell<String>,
+    updater: OnceCell<Result<crate::updater::Updater, String>>,
 }
 
 define_class!(
@@ -146,6 +147,16 @@ define_class!(
         }
     }
     impl Delegate {
+        #[unsafe(method(checkUpdates:))]
+        fn check_updates(&self, _: Option<&AnyObject>) {
+            if let Some(Ok(updater)) = self.ivars().updater.get() { updater.check(); }
+        }
+        #[unsafe(method(automaticUpdates:))]
+        fn automatic_updates(&self, sender: &NSSwitch) {
+            if let Some(Ok(updater)) = self.ivars().updater.get() {
+                updater.set_automatically_checks(sender.state() != 0);
+            }
+        }
         #[unsafe(method(navigate:))]
         fn navigate(&self, sender: &NSButton) { self.select_section(sender.tag()); }
         #[unsafe(method(serviceMenu:))]
@@ -272,6 +283,7 @@ pub fn run(config: Config, path: PathBuf) -> Result<(), String> {
         notification_delegate: OnceCell::new(),
         icon_cache: RefCell::new(HashMap::new()),
         render_signature: RefCell::new(String::new()),
+        updater: OnceCell::new(),
     });
     // SAFETY: NSObject init returns the initialized, retained subclass instance.
     let delegate: Retained<Delegate> = unsafe { msg_send![super(this), init] };
@@ -288,6 +300,12 @@ pub fn run(config: Config, path: PathBuf) -> Result<(), String> {
 impl Delegate {
     fn setup(&self) {
         let mtm = self.mtm();
+        let start_updates = !self.ivars().state.borrow().smoke
+            || std::env::var_os("OWLGOOD_SMOKE_UPDATER_START").is_some();
+        let _ = self
+            .ivars()
+            .updater
+            .set(crate::updater::Updater::new(mtm, start_updates));
         let item = NSStatusBar::systemStatusBar().statusItemWithLength(-1.0);
         if let Some(button) = item.button(self.mtm()) {
             // SAFETY: Target is retained by run() throughout the application; selector is declared above.
@@ -336,6 +354,13 @@ impl Delegate {
                 self.select_section(0);
                 eprintln!("OwlGood: smoke verified all settings navigation selections");
             }
+            if let Some(Err(error)) = self.ivars().updater.get() {
+                eprintln!("OwlGood: Sparkle initialization failed: {error}");
+            }
+            assert!(
+                matches!(self.ivars().updater.get(), Some(Ok(_))),
+                "Sparkle must load from the app bundle"
+            );
             if std::env::var_os("OWLGOOD_SMOKE_AUTOSAVE").is_some() {
                 self.smoke_autosave();
             }
@@ -1379,6 +1404,11 @@ impl Delegate {
                 "bell.badge.fill",
                 NSColor::systemRedColor(),
             ),
+            (
+                "Mises à jour",
+                "arrow.triangle.2.circlepath",
+                NSColor::systemGreenColor(),
+            ),
         ]
         .iter()
         .enumerate()
@@ -1422,6 +1452,8 @@ impl Delegate {
         let services = self.tab(&tabs, "Services");
         let appearance = self.tab(&tabs, "Apparence");
         let notifications = self.tab(&tabs, "Notifications");
+        let updates = self.tab(&tabs, "Mises à jour");
+        self.build_updates(&updates);
         root.addSubview(&tabs);
         self.settings_heading(
             &services,
@@ -2117,6 +2149,62 @@ impl Delegate {
     fn open_options(&self) {
         self.open_settings();
         self.select_section(1);
+    }
+    fn build_updates(&self, page: &NSView) {
+        self.settings_heading(
+            page,
+            "Toujours à jour",
+            "Les nouveautés d’OwlGood, directement sur votre Mac.",
+            "arrow.triangle.2.circlepath",
+            &NSColor::systemGreenColor(),
+        );
+        self.settings_card(page, rect(8., 286., 612., 140.));
+        page.addSubview(&self.label(
+            &format!("OwlGood {}", crate::updater::version()),
+            rect(24., 386., 540., 26.),
+            17.,
+        ));
+        let automatic = self.check(
+            "Rechercher automatiquement les mises à jour",
+            rect(24., 346., 566., 26.),
+        );
+        // SAFETY: This switch targets a main-thread method of its retained delegate.
+        unsafe {
+            automatic.control.setAction(Some(sel!(automaticUpdates:)));
+        }
+        let check = self.button(
+            "Rechercher une mise à jour…",
+            rect(20., 296., 280., 32.),
+            sel!(checkUpdates:),
+        );
+        let detail = match self.ivars().updater.get() {
+            Some(Ok(updater)) => {
+                automatic
+                    .control
+                    .setState(if updater.automatically_checks() { 1 } else { 0 });
+                "Vérification quotidienne. Vous choisissez quand installer et redémarrer."
+                    .to_string()
+            }
+            Some(Err(error)) => {
+                automatic.control.setEnabled(false);
+                check.setEnabled(false);
+                error.clone()
+            }
+            None => {
+                automatic.control.setEnabled(false);
+                check.setEnabled(false);
+                "Le module de mise à jour n’est pas disponible.".into()
+            }
+        };
+        page.addSubview(&automatic.view);
+        page.addSubview(&check);
+        let hint = self.label(&detail, rect(24., 216., 570., 58.), 12.);
+        hint.setMaximumNumberOfLines(3);
+        if let Some(cell) = hint.cell() {
+            cell.setLineBreakMode(NSLineBreakMode::ByWordWrapping);
+        }
+        hint.setTextColor(Some(&NSColor::secondaryLabelColor()));
+        page.addSubview(&hint);
     }
     fn build_options(&self, appearance: &NSView, notifications: &NSView, interval: &NSTextField) {
         self.settings_heading(

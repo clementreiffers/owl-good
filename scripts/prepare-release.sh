@@ -8,6 +8,7 @@ if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; th
   exit 1
 fi
 
+[[ -n "${OWLGOOD_UPDATER_PRIVATE_KEY:-}" ]] || { echo 'Missing release configuration: OWLGOOD_UPDATER_PRIVATE_KEY' >&2; exit 1; }
 OWLGOOD_RELEASE_VERSION="$version" ./scripts/build-app.sh --universal
 app="$PWD/target/release/OwlGood.app"
 actual_version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")
@@ -31,8 +32,15 @@ ditto "$app" "$staging/dmg/OwlGood.app"
 ln -s /Applications "$staging/dmg/Applications"
 hdiutil create -volname OwlGood -srcfolder "$staging/dmg" -ov -format UDZO "release/$base.dmg"
 hdiutil verify "release/$base.dmg"
+codesign --force --sign - "release/$base.dmg"
+codesign --verify --strict "release/$base.dmg"
 tar -czf "release/$base.app.tar.gz" -C target/release OwlGood.app
 tar -xzf "release/$base.app.tar.gz" -C "$staging/extracted"
 codesign --verify --deep --strict "$staging/extracted/OwlGood.app"
 verify_universal "$staging/extracted/OwlGood.app/Contents/MacOS/owlgood"
-(cd release && shasum -a 256 "$base.dmg" "$base.app.tar.gz" > SHA256SUMS.txt)
+# Private material is passed through stdin, never command arguments or logs.
+printf '%s' "$OWLGOOD_UPDATER_PRIVATE_KEY" | target/sparkle-sdk/bin/sign_update --ed-key-file - -p "release/$base.app.tar.gz" > "release/$base.app.tar.gz.sig"
+node scripts/updater-release.mjs artifacts "$version"
+printf '%s' "$OWLGOOD_UPDATER_PRIVATE_KEY" | target/sparkle-sdk/bin/sign_update --ed-key-file - release/appcast.xml
+printf '%s' "$OWLGOOD_UPDATER_PRIVATE_KEY" | target/sparkle-sdk/bin/sign_update --ed-key-file - --verify release/appcast.xml
+node scripts/updater-release.mjs checksums "$version"

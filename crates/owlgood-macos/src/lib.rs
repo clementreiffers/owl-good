@@ -5,6 +5,8 @@ mod icons;
 mod native;
 mod policy;
 #[cfg(target_os = "macos")]
+mod updater;
+#[cfg(target_os = "macos")]
 pub use native::run;
 
 #[cfg(not(target_os = "macos"))]

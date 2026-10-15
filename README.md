@@ -40,18 +40,31 @@ La CI GitHub Actions vérifie les tests de versionnement, le formatage Rust, Cli
 
 Comme dans `litellm-ember`, les tags sont au format `1.2.3`, sans préfixe `v`, et la première release est `1.0.0`. Les notes sont générées automatiquement. La version calculée est injectée dans les deux champs de version du bundle macOS ; les manifestes Cargo gardent leur version de développement, sans commit automatique de versionnement.
 
-Chaque GitHub Release contient un DMG, une archive `OwlGood-VERSION-macos-universal.app.tar.gz` et `SHA256SUMS.txt`. Le binaire est compilé en profil release pour Apple Silicon et Intel, puis assemblé avec `lipo`. Le packaging vérifie les architectures, la version du bundle, la signature ad hoc et l’intégrité du DMG. L’application reste non notarialisée, comme le build local.
+Chaque GitHub Release contient un DMG signé ad hoc, une archive `OwlGood-VERSION-macos-universal.app.tar.gz` et `SHA256SUMS.txt`. Le binaire est compilé en profil release pour Apple Silicon et Intel, puis assemblé avec `lipo`. Le packaging vérifie les architectures, la version du bundle, la signature ad hoc et l’intégrité du DMG. L’application reste non notarialisée, comme le build local.
 
-Le workflow utilise uniquement le secret automatique `GITHUB_TOKEN` avec `contents: write` pour publier. Aucun secret Tauri n’est nécessaire pour cette application AppKit. Le dépôt GitHub doit avoir Actions activé et autoriser la création de tags et de releases par ce token.
+Le workflow utilise `GITHUB_TOKEN` avec `contents: write` pour publier, ainsi que le secret `OWLGOOD_UPDATER_PRIVATE_KEY` pour authentifier les mises à jour Sparkle. La clé publique correspondante est versionnée dans `resources/updater-public-key.txt`. Une clé absente ou une signature incorrecte bloque la publication. Le dépôt GitHub doit avoir Actions activé et autoriser la création de tags et de releases par ce token.
 
 Pour vérifier le packaging localement sans publier :
 
 ```sh
 rustup target add aarch64-apple-darwin x86_64-apple-darwin
+# Exporter OWLGOOD_UPDATER_PRIVATE_KEY depuis votre gestionnaire de secrets.
 bash scripts/prepare-release.sh 1.0.0
 ```
 
 Les fichiers sont déposés dans `release/`. Pour vérifier les règles de versionnement : `npm ci && npm test` (Node.js 24.10 ou ultérieur).
+
+## Mises à jour macOS
+
+Dans **Paramètres → Mises à jour**, OwlGood affiche sa version embarquée et permet une recherche manuelle. Sparkle recherche aussi les nouvelles versions stables toutes les 24 heures ; ce comportement peut être désactivé dans cet onglet. Son interface native présente le téléchargement, la vérification, l’installation et le redémarrage avec l’accord de l’utilisateur. Les services et leurs paramètres sont conservés.
+
+Le build embarque Sparkle 2.10.0, téléchargé depuis sa release officielle et contrôlé par SHA-256. Les helpers, le framework, l’application et le DMG sont signés ad hoc. L’archive `.app.tar.gz` dispose en plus d’une signature Ed25519 ; `appcast.xml` est signé lui aussi et lie la version au téléchargement. L’application exige un flux signé. Semantic-release publie ces fichiers, la signature `.sig` et `SHA256SUMS.txt` dans la même release GitHub. Sparkle vérifie les signatures avant de remplacer l’application ; la clé privée ne doit jamais être commitée.
+
+**La signature ad hoc n’est pas une notarisation Apple et n’empêche pas le navigateur d’ajouter la quarantaine.** Comme Ember, OwlGood ne contourne pas Gatekeeper et ne retire pas automatiquement cet attribut. Pour une première installation bloquée, utilisez Réglages Système → Confidentialité et sécurité → Ouvrir quand même. Un premier lancement sans cette procédure nécessite une signature Developer ID et la notarisation Apple, hors de ce mode ad hoc.
+
+Installer l’application dans Applications avant de demander une mise à jour ; ne pas la lancer depuis le DMG pour la remplacer. Une ancienne version sans Sparkle nécessite une première installation manuelle du nouveau DMG.
+
+Voir [la procédure de validation des mises à jour](docs/macos-updates.md) pour les essais de remplacement réel et la gestion de la clé.
 
 ## Surveillance
 
