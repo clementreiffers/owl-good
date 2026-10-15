@@ -740,4 +740,40 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn shutdown_cancels_inflight_network_request() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let (started_tx, started_rx) = mpsc::channel();
+        let (closed_tx, closed_rx) = mpsc::channel();
+        thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(6)))
+                .unwrap();
+            let mut request = [0; 2048];
+            socket.read(&mut request).unwrap();
+            started_tx.send(()).unwrap();
+            closed_tx
+                .send(matches!(socket.read(&mut request), Ok(0)))
+                .unwrap();
+        });
+        let mut config = Config {
+            timeout_secs: 10,
+            ..Config::default()
+        };
+        config.sites[0].adapter = "regex".into();
+        config.sites[0].url = url;
+        let monitor = start(config);
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        monitor.commands.send(Command::Shutdown).unwrap();
+        assert!(
+            closed_rx.recv_timeout(Duration::from_secs(7)).unwrap(),
+            "shutdown must close the HTTP connection before its configured timeout"
+        );
+        assert!(matches!(
+            monitor.observations.recv_timeout(Duration::from_secs(1)),
+            Err(mpsc::RecvTimeoutError::Disconnected)
+        ));
+    }
 }
