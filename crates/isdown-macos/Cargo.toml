@@ -1,0 +1,8 @@
+[package]
+name = "isdown-macos"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+isdown-core = { path = "../isdown-core" }
+isdown-monitor = { path = "../isdown-monitor" }
