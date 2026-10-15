@@ -752,7 +752,13 @@ mod tests {
                 .set_read_timeout(Some(Duration::from_secs(6)))
                 .unwrap();
             let mut request = [0; 2048];
-            socket.read(&mut request).unwrap();
+            let mut header = Vec::new();
+            while !header.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                socket.read_exact(&mut byte).unwrap();
+                header.push(byte[0]);
+                assert!(header.len() < 8192);
+            }
             started_tx.send(()).unwrap();
             closed_tx
                 .send(matches!(socket.read(&mut request), Ok(0)))
