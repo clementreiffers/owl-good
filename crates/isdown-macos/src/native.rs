@@ -88,7 +88,11 @@ struct Settings {
     baseline: RefCell<Vec<String>>,
     inline_error: Retained<NSTextField>,
     tabs: Retained<NSTabView>,
-    navigation: Vec<Retained<NSButton>>,
+    navigation: Vec<SettingsNavigation>,
+}
+struct SettingsNavigation {
+    button: Retained<NSButton>,
+    selection: Retained<NSBox>,
 }
 struct Toggle {
     view: Retained<NSView>,
@@ -304,6 +308,20 @@ impl Delegate {
         if self.ivars().state.borrow().smoke {
             self.toggle();
             self.open_settings();
+            if let Some(settings) = self.ivars().settings.get() {
+                for (index, item) in settings.navigation.iter().enumerate() {
+                    // SAFETY: The retained delegate implements navigate: and this
+                    // smoke check runs on the AppKit main thread.
+                    unsafe { item.button.performClick(None) };
+                    let selected = settings.tabs.selectedTabViewItem().expect("settings page");
+                    assert_eq!(settings.tabs.indexOfTabViewItem(&selected), index as isize);
+                    for (other_index, other) in settings.navigation.iter().enumerate() {
+                        assert_eq!(other.selection.isHidden(), other_index != index);
+                    }
+                }
+                self.select_section(0);
+                eprintln!("isDown: smoke verified all settings navigation selections");
+            }
             if std::env::var_os("ISDOWN_SMOKE_OPTIONS").is_some() {
                 self.open_options();
             }
@@ -440,6 +458,57 @@ impl Delegate {
         }
         field
     }
+    /// Native semantic colors keep grouped settings readable in both appearances.
+    fn settings_card(&self, parent: &NSView, frame: NSRect) {
+        let card = NSBox::initWithFrame(NSBox::alloc(self.mtm()), frame);
+        card.setBoxType(NSBoxType::Custom);
+        card.setTitlePosition(NSTitlePosition::NoTitle);
+        card.setCornerRadius(12.);
+        card.setBorderWidth(0.5);
+        card.setBorderColor(&NSColor::separatorColor());
+        card.setFillColor(&NSColor::controlBackgroundColor());
+        parent.addSubview(&card);
+    }
+    fn settings_icon(&self, parent: &NSView, symbol: &str, color: &NSColor, frame: NSRect) {
+        let tile = NSBox::initWithFrame(NSBox::alloc(self.mtm()), frame);
+        tile.setBoxType(NSBoxType::Custom);
+        tile.setTitlePosition(NSTitlePosition::NoTitle);
+        tile.setCornerRadius(frame.size.width * 0.24);
+        tile.setBorderWidth(0.);
+        tile.setFillColor(color);
+        parent.addSubview(&tile);
+        let icon = NSImageView::initWithFrame(
+            NSImageView::alloc(self.mtm()),
+            rect(
+                frame.origin.x + 6.,
+                frame.origin.y + 6.,
+                frame.size.width - 12.,
+                frame.size.height - 12.,
+            ),
+        );
+        icon.setImage(
+            NSImage::imageWithSystemSymbolName_accessibilityDescription(&ns(symbol), None)
+                .as_deref(),
+        );
+        icon.setContentTintColor(Some(&NSColor::whiteColor()));
+        parent.addSubview(&icon);
+    }
+    fn settings_heading(
+        &self,
+        parent: &NSView,
+        title: &str,
+        detail: &str,
+        symbol: &str,
+        color: &NSColor,
+    ) {
+        self.settings_icon(parent, symbol, color, rect(20., 448., 40., 40.));
+        let heading = self.label(title, rect(72., 467., 536., 30.), 23.);
+        heading.setFont(Some(&NSFont::systemFontOfSize_weight(23., 0.3)));
+        parent.addSubview(&heading);
+        let subtitle = self.label(detail, rect(72., 445., 536., 20.), 12.);
+        subtitle.setTextColor(Some(&NSColor::secondaryLabelColor()));
+        parent.addSubview(&subtitle);
+    }
     fn button(
         &self,
         title: &str,
@@ -496,8 +565,10 @@ impl Delegate {
     fn select_section(&self, index: isize) {
         if let Some(s) = self.ivars().settings.get() {
             s.tabs.selectTabViewItemAtIndex(index);
-            for (i, button) in s.navigation.iter().enumerate() {
-                button.setState(if i as isize == index { 1 } else { 0 });
+            for (i, item) in s.navigation.iter().enumerate() {
+                let selected = i as isize == index;
+                item.selection.setHidden(!selected);
+                item.button.setState(if selected { 1 } else { 0 });
             }
         }
     }
@@ -1110,7 +1181,7 @@ impl Delegate {
         }
     }
     fn build_settings(&self) {
-        let window = self.window("Réglages — isDown", 884., 670.);
+        let window = self.window("Réglages — isDown", 884., 638.);
         window.setStyleMask(
             window.styleMask()
                 | NSWindowStyleMask::FullSizeContentView
@@ -1118,61 +1189,100 @@ impl Delegate {
         );
         window.setTitleVisibility(NSWindowTitleVisibility::Hidden);
         window.setOpaque(false);
-        window.setBackgroundColor(Some(&NSColor::clearColor()));
-        let root = NSView::initWithFrame(NSView::alloc(self.mtm()), rect(0., 0., 884., 670.));
+        window.setBackgroundColor(Some(&NSColor::windowBackgroundColor()));
+        let root = NSView::initWithFrame(NSView::alloc(self.mtm()), rect(0., 0., 884., 638.));
         let tabs =
-            NSTabView::initWithFrame(NSTabView::alloc(self.mtm()), rect(204., 72., 660., 558.));
+            NSTabView::initWithFrame(NSTabView::alloc(self.mtm()), rect(204., 72., 660., 526.));
         tabs.setTabViewType(NSTabViewType::NoTabsNoBorder);
         // This view only hosts pages; the real navigation lives in the sidebar.
         // Do not draw a focus ring around the whole settings pane.
         tabs.setFocusRingType(NSFocusRingType::None);
-        let sidebar = NSView::initWithFrame(NSView::alloc(self.mtm()), rect(0., 0., 176., 646.));
-        let brand = self.label("isDown", rect(18., 590., 140., 26.), 18.);
+        let sidebar = NSView::initWithFrame(NSView::alloc(self.mtm()), rect(0., 0., 176., 614.));
+        self.settings_icon(
+            &sidebar,
+            "waveform.path.ecg",
+            &NSColor::systemBlueColor(),
+            rect(16., 548., 38., 38.),
+        );
+        let brand = self.label("isDown", rect(64., 563., 100., 26.), 18.);
         brand.setFont(Some(&NSFont::systemFontOfSize_weight(18., 0.23)));
         sidebar.addSubview(&brand);
+        let caption = self.label("Réglages", rect(64., 546., 100., 20.), 11.);
+        caption.setTextColor(Some(&NSColor::secondaryLabelColor()));
+        sidebar.addSubview(&caption);
         let mut navigation = Vec::new();
-        for (i, (title, symbol)) in [
-            ("Services", "square.stack.3d.up"),
-            ("Apparence", "circle.lefthalf.filled"),
-            ("Notifications", "bell"),
+        for (i, (title, symbol, color)) in [
+            (
+                "Services",
+                "square.stack.3d.up.fill",
+                NSColor::systemBlueColor(),
+            ),
+            (
+                "Apparence",
+                "paintpalette.fill",
+                NSColor::systemPurpleColor(),
+            ),
+            (
+                "Notifications",
+                "bell.badge.fill",
+                NSColor::systemRedColor(),
+            ),
         ]
         .iter()
         .enumerate()
         {
-            let button = self.button(
-                title,
-                rect(10., 528. - i as f64 * 46., 156., 38.),
-                sel!(navigate:),
-            );
-            button.setBezelStyle(NSBezelStyle::AccessoryBar);
-            button.setContentTintColor(Some(&NSColor::labelColor()));
-            button.setBezelColor(Some(&NSColor::controlColor()));
-            button.setButtonType(NSButtonType::PushOnPushOff);
-            button.setAlignment(NSTextAlignment::Left);
-            button.setFont(Some(&NSFont::systemFontOfSize(13.)));
-            button.setImage(
-                NSImage::imageWithSystemSymbolName_accessibilityDescription(
-                    &ns(symbol),
-                    Some(&ns(title)),
-                )
-                .as_deref(),
-            );
-            button.setImagePosition(NSCellImagePosition::ImageLeading);
+            let y = 504. - i as f64 * 36.;
+            let selection = NSBox::initWithFrame(NSBox::alloc(self.mtm()), rect(10., y, 176., 32.));
+            selection.setBoxType(NSBoxType::Custom);
+            selection.setTitlePosition(NSTitlePosition::NoTitle);
+            selection.setCornerRadius(7.);
+            selection.setBorderWidth(0.);
+            selection.setFillColor(&NSColor::controlAccentColor().colorWithAlphaComponent(0.18));
+            selection.setHidden(i != 0);
+            sidebar.addSubview(&selection);
+            self.settings_icon(&sidebar, symbol, color, rect(18., y + 3., 26., 26.));
+            let label = self.label(title, rect(52., y, 128., 20.), 13.);
+            label.setFont(Some(&NSFont::systemFontOfSize_weight(13., 0.23)));
+            // Center the native text field's fitted height in the navigation row.
+            label.sizeToFit();
+            let height = label.frame().size.height;
+            label.setFrame(rect(52., y + (32. - height) / 2., 128., height));
+            sidebar.addSubview(&label);
+            // A transparent hit target covers the entire row. The fixed icon,
+            // label and selection are separate from NSButton's bezel layout,
+            // so changing destinations cannot shift or truncate the title.
+            let button = self.button("", rect(10., y, 176., 32.), sel!(navigate:));
+            button.setBordered(false);
+            button.setButtonType(NSButtonType::MomentaryChange);
+            button.setAccessibilityLabel(Some(&ns(title)));
             button.setTag(i as isize);
             button.setState(if i == 0 { 1 } else { 0 });
             sidebar.addSubview(&button);
-            navigation.push(button);
+            navigation.push(SettingsNavigation { button, selection });
         }
         sidebar.setFrameOrigin(NSPoint::new(12., 12.));
+        let sidebar = self.glass(
+            &sidebar,
+            rect(0., 0., 196., 638.),
+            NSVisualEffectMaterial::Sidebar,
+        );
         root.addSubview(&sidebar);
         let services = self.tab(&tabs, "Services");
         let appearance = self.tab(&tabs, "Apparence");
         let notifications = self.tab(&tabs, "Notifications");
         root.addSubview(&tabs);
-        services.addSubview(&self.label("Vos services", rect(20., 490., 420., 28.), 20.));
+        self.settings_heading(
+            &services,
+            "Vos services",
+            "Gardez un œil sur les services qui comptent pour vous.",
+            "square.stack.3d.up.fill",
+            &NSColor::systemBlueColor(),
+        );
+        self.settings_card(&services, rect(8., 406., 612., 40.));
+        self.settings_card(&services, rect(8., 290., 612., 112.));
         let site = NSPopUpButton::initWithFrame_pullsDown(
             NSPopUpButton::alloc(self.mtm()),
-            rect(20., 446., 538., 30.),
+            rect(20., 414., 538., 30.),
             false,
         );
         // SAFETY: The delegate owns the control and implements the selector.
@@ -1184,27 +1294,30 @@ impl Delegate {
         services.addSubview(&self.symbol_button(
             "ellipsis.circle",
             "Gérer les services",
-            rect(570., 446., 30., 30.),
+            rect(570., 414., 30., 30.),
             sel!(serviceMenu:),
         ));
-        let name = self.field("", rect(150., 394., 450., 26.));
-        let url = self.field("", rect(150., 352., 450., 26.));
-        for (title, y, field) in [("Nom", 394., &name), ("Page de statut", 352., &url)] {
+        let name = self.field("", rect(150., 370., 450., 26.));
+        name.setPlaceholderString(Some(&ns("Ex. GitLab")));
+        let url = self.field("", rect(150., 336., 450., 26.));
+        url.setPlaceholderString(Some(&ns("https://status.exemple.com")));
+        for (title, y, field) in [("Nom", 370., &name), ("Page de statut", 336., &url)] {
             services.addSubview(&self.label(title, rect(20., y, 125., 24.), 13.));
             field.setAccessibilityLabel(Some(&ns(title)));
             services.addSubview(field);
         }
-        let enabled = self.check("Surveiller ce service", rect(150., 314., 450., 26.));
+        let enabled = self.check("Surveiller ce service", rect(150., 302., 450., 26.));
         services.addSubview(&enabled.view);
         let disclosure = self.button(
             "▸ Réglages avancés",
-            rect(16., 268., 230., 28.),
+            rect(16., 260., 230., 28.),
             sel!(advanced:),
         );
         disclosure.setBordered(false);
         disclosure.setAlignment(NSTextAlignment::Left);
         services.addSubview(&disclosure);
         let advanced = NSView::initWithFrame(NSView::alloc(self.mtm()), rect(20., 0., 600., 262.));
+        self.settings_card(&advanced, rect(-12., 12., 612., 250.));
         let adapter = NSPopUpButton::initWithFrame_pullsDown(
             NSPopUpButton::alloc(self.mtm()),
             rect(130., 224., 200., 26.),
@@ -1244,7 +1357,7 @@ impl Delegate {
         ));
         advanced.setHidden(true);
         services.addSubview(&advanced);
-        let interval = self.field("30", rect(450., 446., 100., 26.));
+        let interval = self.field("30", rect(450., 414., 100., 26.));
         self.build_options(&appearance, &notifications, &interval);
         let message = self.label(
             "Les modifications restent en brouillon jusqu’à l’enregistrement.",
@@ -1259,13 +1372,9 @@ impl Delegate {
         root.addSubview(&message);
         let save = self.button("Enregistrer", rect(736., 24., 128., 32.), sel!(saveSite:));
         save.setKeyEquivalent(&ns("\r"));
+        save.setBezelColor(Some(&NSColor::controlAccentColor()));
         root.addSubview(&save);
-        let material = self.glass(
-            &root,
-            rect(0., 0., 884., 670.),
-            NSVisualEffectMaterial::Sidebar,
-        );
-        window.setContentView(Some(&material));
+        window.setContentView(Some(&root));
         let json_window = self.window("Configuration avancée — isDown", 700., 520.);
         let json_root = NSView::initWithFrame(NSView::alloc(self.mtm()), rect(0., 0., 700., 520.));
         json_root.addSubview(&self.label("Configuration JSON", rect(20., 470., 640., 28.), 20.));
@@ -1834,11 +1943,19 @@ impl Delegate {
         self.select_section(1);
     }
     fn build_options(&self, appearance: &NSView, notifications: &NSView, interval: &NSTextField) {
-        appearance.addSubview(&self.label("Apparence", rect(20., 490., 580., 28.), 20.));
-        appearance.addSubview(&self.label("Thème", rect(20., 446., 130., 26.), 13.));
+        self.settings_heading(
+            appearance,
+            "À votre image",
+            "Un affichage qui trouve sa place sur votre Mac.",
+            "paintpalette.fill",
+            &NSColor::systemPurpleColor(),
+        );
+        self.settings_card(appearance, rect(8., 406., 612., 40.));
+        self.settings_card(appearance, rect(8., 206., 612., 128.));
+        appearance.addSubview(&self.label("Thème", rect(20., 414., 130., 26.), 13.));
         let theme = NSPopUpButton::initWithFrame_pullsDown(
             NSPopUpButton::alloc(self.mtm()),
-            rect(160., 446., 280., 28.),
+            rect(160., 414., 280., 28.),
             false,
         );
         for title in ["Système", "Clair", "Sombre"] {
@@ -1850,17 +1967,14 @@ impl Delegate {
             theme.setAction(Some(sel!(preview:)));
         }
         appearance.addSubview(&theme);
-        let preview = NSView::initWithFrame(NSView::alloc(self.mtm()), rect(20., 370., 600., 60.));
+        let preview = NSView::initWithFrame(NSView::alloc(self.mtm()), rect(20., 338., 600., 60.));
         // The preview uses the same open, borderless service layout as the panel.
         let preview_icon =
             NSImageView::initWithFrame(NSImageView::alloc(self.mtm()), rect(16., 19., 28., 28.));
         preview.addSubview(&preview_icon);
         preview.addSubview(&self.label("GitLab", rect(56., 29., 320., 17.), 13.));
-        let preview_status = self.label(
-            "Opérationnel · 15/10 14:32:05",
-            rect(56., 14., 320., 15.),
-            11.,
-        );
+        let preview_status =
+            self.label("Opérationnel · à l’instant", rect(56., 14., 320., 15.), 11.);
         preview_status.setTextColor(Some(&NSColor::secondaryLabelColor()));
         preview.addSubview(&preview_status);
         preview.addSubview(&self.status_dot(Status::Healthy, rect(41., 16., 6., 6.)));
@@ -1869,7 +1983,7 @@ impl Delegate {
         // inherit the page's background when previewing the opposite appearance.
         let preview = self.glass(
             &preview,
-            rect(20., 370., 600., 60.),
+            rect(20., 338., 600., 60.),
             NSVisualEffectMaterial::Popover,
         );
         appearance.addSubview(&preview);
@@ -1886,13 +2000,13 @@ impl Delegate {
         .iter()
         .map(|title| self.check(title, rect(20., 0., 560., 26.)))
         .collect();
-        for (i, y) in [(1, 332.), (2, 300.), (0, 268.), (7, 236.)] {
+        for (i, y) in [(1, 304.), (2, 274.), (0, 244.), (7, 214.)] {
             checks[i].view.setFrameOrigin(NSPoint::new(20., y));
             appearance.addSubview(&checks[i].view);
         }
         let disclosure = self.button(
             "▸ Personnalisation avancée",
-            rect(16., 196., 280., 28.),
+            rect(16., 174., 280., 28.),
             sel!(appearanceAdvanced:),
         );
         disclosure.setBordered(false);
@@ -1900,12 +2014,12 @@ impl Delegate {
         appearance.addSubview(&disclosure);
         let advanced = NSScrollView::initWithFrame(
             NSScrollView::alloc(self.mtm()),
-            rect(20., 12., 600., 174.),
+            rect(20., 12., 600., 154.),
         );
         advanced.setHasVerticalScroller(true);
         advanced.setDrawsBackground(false);
         let advanced_content =
-            NSView::initWithFrame(NSView::alloc(self.mtm()), rect(0., 0., 580., 560.));
+            NSView::initWithFrame(NSView::alloc(self.mtm()), rect(0., 0., 580., 480.));
         let titles = [
             "Nom dans la barre des menus",
             "Taille des icônes",
@@ -1924,14 +2038,15 @@ impl Delegate {
             "Taille de la pastille",
             "Position : left / right",
         ];
-        let details = NSView::initWithFrame(NSView::alloc(self.mtm()), rect(20., 90., 600., 290.));
+        let details = NSView::initWithFrame(NSView::alloc(self.mtm()), rect(20., 108., 600., 252.));
+        self.settings_card(&details, rect(-12., 0., 612., 244.));
         let mut fields = Vec::new();
         let mut row = 0;
         for (i, title) in titles.iter().enumerate() {
             let (parent, y) = if i == 9 || i == 10 {
-                (&details, if i == 9 { 100. } else { 58. })
+                (&details, if i == 9 { 88. } else { 54. })
             } else {
-                let y = 520. - row as f64 * 38.;
+                let y = 446. - row as f64 * 32.;
                 row += 1;
                 (&advanced_content, y)
             };
@@ -1944,29 +2059,36 @@ impl Delegate {
         advanced.setDocumentView(Some(&advanced_content));
         advanced.setHidden(true);
         appearance.addSubview(&advanced);
-        notifications.addSubview(&self.label("Notifications", rect(20., 490., 580., 28.), 20.));
+        self.settings_heading(
+            notifications,
+            "Restez informé",
+            "Choisissez les événements qui méritent votre attention.",
+            "bell.badge.fill",
+            &NSColor::systemRedColor(),
+        );
+        self.settings_card(notifications, rect(8., 368., 612., 78.));
         notifications.addSubview(&self.label(
             "Vérifier les services toutes les (secondes)",
-            rect(20., 446., 420., 26.),
+            rect(20., 414., 420., 26.),
             13.,
         ));
         interval.setAccessibilityLabel(Some(&ns("Intervalle de surveillance en secondes")));
         notifications.addSubview(interval);
-        checks[3].view.setFrameOrigin(NSPoint::new(20., 396.));
+        checks[3].view.setFrameOrigin(NSPoint::new(20., 380.));
         notifications.addSubview(&checks[3].view);
-        for (i, y) in [(4, 242.), (5, 204.), (6, 166.)] {
+        for (i, y) in [(4, 204.), (5, 172.), (6, 140.)] {
             checks[i].view.setFrameOrigin(NSPoint::new(0., y));
             details.addSubview(&checks[i].view);
         }
         details.addSubview(&self.button(
             "Autoriser dans macOS…",
-            rect(0., 8., 240., 30.),
+            rect(12., 8., 240., 30.),
             sel!(allowNotifications:),
         ));
         notifications.addSubview(&details);
         notifications.addSubview(&self.label(
             "Les alertes confirmées limitent les notifications répétitives.",
-            rect(20., 35., 580., 30.),
+            rect(20., 70., 580., 30.),
             12.,
         ));
         let _ = self.ivars().options.set(Options {
