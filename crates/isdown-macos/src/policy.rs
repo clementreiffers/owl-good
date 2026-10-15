@@ -1,6 +1,45 @@
 //! Pure presentation and notification policies, independent of Cocoa.
 use isdown_core::{Notifications, Status};
 
+/// Shared compact row metrics, including the status indicator overlapping the icon’s bottom-right corner.
+pub(crate) struct ServiceRowLayout {
+    pub name_height: f64,
+    pub detail_size: f64,
+    pub detail_height: f64,
+    pub row_height: f64,
+    pub icon_y: f64,
+    pub dot_y: f64,
+    pub dot_x: f64,
+    pub text_y: f64,
+}
+impl ServiceRowLayout {
+    pub fn new(a: &isdown_core::Appearance) -> Self {
+        let name_height = (a.font_size * 1.3).ceil().max(17.);
+        let detail_size = (a.font_size - 2.).max(11.);
+        let detail_height = (detail_size * 1.3).ceil().max(15.);
+        let text_height = name_height + detail_height;
+        let row_height = a
+            .row_height
+            .max(text_height + 8.)
+            .max(if a.show_site_icons {
+                a.icon_size + 8.
+            } else {
+                0.
+            });
+        let icon_y = (row_height - a.icon_size) / 2.;
+        Self {
+            name_height,
+            detail_size,
+            detail_height,
+            row_height,
+            icon_y,
+            dot_y: icon_y - 3.,
+            dot_x: a.icon_size - 3.,
+            text_y: (row_height - text_height) / 2.,
+        }
+    }
+}
+
 pub(crate) fn status_label(status: Status) -> &'static str {
     match status {
         Status::Healthy => "Opérationnel",
@@ -93,6 +132,47 @@ mod tests {
             sound: false,
         }
     }
+    #[test]
+    fn compact_row_overlays_dot_on_bottom_right_corner() {
+        let appearance = isdown_core::Appearance::default();
+        let row = ServiceRowLayout::new(&appearance);
+        assert_eq!(row.row_height, 44.);
+        assert_eq!(row.text_y, 6.);
+        assert_eq!(row.dot_y + 3., row.icon_y);
+        assert_eq!(row.dot_x + 3., appearance.icon_size);
+        assert!(row.dot_y >= 0.);
+        assert!(row.icon_y + appearance.icon_size <= row.row_height);
+    }
+
+    #[test]
+    fn compact_rows_fit_large_fonts_and_icons_without_overlap() {
+        for font_size in [10., 13., 32.] {
+            for icon_size in [12., 28., 64.] {
+                for show_site_icons in [false, true] {
+                    let a = isdown_core::Appearance {
+                        font_size,
+                        icon_size,
+                        show_site_icons,
+                        row_height: 24.,
+                        ..Default::default()
+                    };
+                    let row = ServiceRowLayout::new(&a);
+                    assert!(row.text_y >= 4.);
+                    assert!(
+                        row.text_y + row.detail_height + row.name_height <= row.row_height - 4.
+                    );
+                    if show_site_icons {
+                        assert!(row.dot_y >= 0.);
+                        assert!(row.dot_y < row.icon_y);
+                        assert!(row.dot_y + 6. > row.icon_y);
+                        assert_eq!(row.dot_x + 3., icon_size);
+                        assert!(row.icon_y + icon_size <= row.row_height);
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn confirms_and_deduplicates() {
         let mut state = NotificationState::default();

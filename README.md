@@ -12,6 +12,14 @@ Prérequis : macOS 13 ou ultérieur, Rust stable (édition 2024) et les Command 
 open target/release/isDown.app
 ```
 
+Pour développer sans recréer le bundle release :
+
+```sh
+cargo run --locked
+```
+
+Cargo réutilise la compilation incrémentale du profil dev. Ce lancement ne fournit pas l’identité du bundle nécessaire aux notifications macOS.
+
 L’application est un accessoire de barre de menus, sans icône permanente dans le Dock. Cliquer son icône pour consulter les services, ouvrir leur page, actualiser, suspendre la surveillance ou accéder aux paramètres. Le bundle est signé localement (ad hoc), pas notarialisé pour distribution publique.
 
 ```sh
@@ -59,9 +67,13 @@ La configuration JSON est enregistrée dans :
 
 `~/Library/Application Support/isDown/config.json`
 
-Les paramètres natifs donnent accès aux options courantes ; l’éditeur avancé expose l’ensemble de la configuration. L’enregistrement est validé et atomique. Une configuration invalide n’est pas remplacée silencieusement par les valeurs par défaut.
+Les réglages natifs regroupent Services, Apparence et Notifications dans une barre latérale, avec des interrupteurs macOS. Les règles de détection et la personnalisation détaillée sont repliées par défaut ; le menu des services donne accès à l’éditeur JSON. Un aperçu permet de comparer les thèmes et le rendu des icônes.
 
-Les options couvrent les services, URL, règles, activation, intervalles, timeout, concurrence, péremption, notifications et apparence. Les couleurs utilisent `#RRGGBB` ; les thèmes sont `system`, `light` et `dark`. Les icônes peuvent être remplacées par un fichier local. Le rendu monochrome s’adapte au thème pour rester lisible.
+Le panneau et la navigation utilisent le matériau Liquid Glass natif sur macOS 26 ou ultérieur, avec un repli sur les matériaux AppKit sur macOS 13 à 15. Les matériaux système gèrent les préférences d’accessibilité, sans transparence artificielle ajoutée. Le panneau compact fait 300 px de large par défaut, avec des lignes de 44 px. Le nom, le statut et la date/heure locale du dernier contrôle sont regroupés ; la pastille chevauche le coin inférieur droit de l’icône. Sous les sites, une liste de commandes avec icônes et libellés affiche « Paramètres », Actualiser, Suspendre/Reprendre et Quitter ; les détails restent disponibles au survol. Les commandes occupent des lignes compactes de 22 px. Un site sans observation disponible indique « Pas de résultat » ; l’heure affichée correspond au dernier contrôle terminé, même en cas d’erreur réseau. Les réglages partagent un fond continu avec les boutons de fenêtre natifs.
+
+Les changements du formulaire sont appliqués avec « Enregistrer ». Fermer la fenêtre conserve le brouillon en mémoire ; changer de service, recharger ou quitter demande confirmation si des modifications risquent d’être perdues. L’import JSON et le formulaire se protègent mutuellement contre l’écrasement de modifications non enregistrées. L’enregistrement est validé et atomique. Une configuration invalide n’est pas remplacée silencieusement par les valeurs par défaut.
+
+Les options couvrent les services, URL, règles, activation, intervalles, timeout, concurrence, péremption, notifications et apparence. Les couleurs utilisent `#RRGGBB` ; les thèmes sont `system`, `light` et `dark`. Les icônes peuvent être remplacées par un fichier local. Le rendu monochrome s’adapte au thème pour rester lisible. L’icône de la barre des menus est une image template native : macOS ajuste son contraste au fond de la menubar, indépendamment du thème de l’application. Sa pastille colorée est rendue séparément.
 
 Pour employer un autre fichier, notamment lors de tests :
 

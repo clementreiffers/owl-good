@@ -135,15 +135,15 @@ impl Default for Appearance {
             badge_position: "right".into(),
             show_menu_title: false,
             show_site_icons: true,
-            icon_size: 18.,
+            icon_size: 28.,
             font_size: 13.,
             row_height: 44.,
-            panel_width: 380.,
+            panel_width: 300.,
             healthy_color: "#34C759".into(),
             warning_color: "#FF9500".into(),
             failed_color: "#FF3B30".into(),
             unknown_color: "#8E8E93".into(),
-            monochrome_icons: true,
+            monochrome_icons: false,
         }
     }
 }
