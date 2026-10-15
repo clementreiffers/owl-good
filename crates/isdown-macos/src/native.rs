@@ -155,9 +155,8 @@ define_class!(
         }
         #[unsafe(method(openSite:))]
         fn open_site(&self, sender: &NSButton) {
-            let state = self.ivars().state.borrow();
-            if let Some(site) = state.config.sites.get(sender.tag() as usize)
-                && let Some(url) = NSURL::URLWithString(&ns(&site.url)) { NSWorkspace::sharedWorkspace().openURL(&url); }
+            let url = self.ivars().state.borrow().config.sites.get(sender.tag() as usize).map(|site|site.url.clone());
+            if let Some(url) = url.and_then(|url|NSURL::URLWithString(&ns(&url))) {NSWorkspace::sharedWorkspace().openURL(&url);}
         }
         #[unsafe(method(selectSite:))]
         fn select_site(&self, _: Option<&AnyObject>) { self.populate_site(); }
@@ -281,18 +280,24 @@ impl Delegate {
                 self.ivars().render_signature.borrow_mut().clear();
             }
         }
-        {
+        let urls = {
             let state = self.ivars().state.borrow();
-            while let Ok(id) = state.clicks.try_recv() {
-                if let Some(site) = state
-                    .config
-                    .sites
-                    .iter()
-                    .find(|s| format!("isdown-{}", s.id) == id)
-                    && let Some(url) = NSURL::URLWithString(&ns(&site.url))
-                {
-                    NSWorkspace::sharedWorkspace().openURL(&url);
-                }
+            state
+                .clicks
+                .try_iter()
+                .filter_map(|id| {
+                    state
+                        .config
+                        .sites
+                        .iter()
+                        .find(|site| format!("isdown-{}", site.id) == id)
+                        .map(|site| site.url.clone())
+                })
+                .collect::<Vec<_>>()
+        };
+        for url in urls {
+            if let Some(url) = NSURL::URLWithString(&ns(&url)) {
+                NSWorkspace::sharedWorkspace().openURL(&url);
             }
         }
         {
@@ -1012,6 +1017,11 @@ impl Delegate {
                 .map_err(|_| "Le moteur de surveillance est arrêté")?;
             let old_config = state.config.clone();
             state.latest.retain(|id, _| {
+                config.sites.iter().any(|site| {
+                    site.id == *id && site.enabled && state_config_site_unchanged(&old_config, site)
+                })
+            });
+            state.notifications.retain(|id, _| {
                 config.sites.iter().any(|site| {
                     site.id == *id && site.enabled && state_config_site_unchanged(&old_config, site)
                 })
