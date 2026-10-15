@@ -290,6 +290,22 @@ fn check(
         retry_after,
     )
 }
+// Validate provider schema before applying user rules. A contradictory code/label
+// cannot silently report healthy, nor can a future provider value masquerade as known.
+fn known_label(code: u64, label: &str) -> bool {
+    let aliases: &[&str] = match code {
+        100 => &["Operational"],
+        200 => &["Maintenance", "Under Maintenance", "Planned Maintenance"],
+        300 => &["Degraded Performance", "Degraded"],
+        400 => &["Partial Service Disruption", "Partial outage"],
+        500 => &["Service Disruption", "Major outage"],
+        600 => &["Security Event", "Critical"],
+        _ => &[],
+    };
+    aliases
+        .iter()
+        .any(|alias| label.eq_ignore_ascii_case(alias))
+}
 /// Interpret only current Status.io fields, never incident history or progression codes.
 pub fn classify(
     adapter: &str,
@@ -338,7 +354,7 @@ pub fn classify(
             .get("status_code")
             .and_then(|v| v.as_u64())
             .ok_or("Missing current status code")?;
-        let status = if [100, 200, 300, 400, 500, 600].contains(&code) {
+        let status = if known_label(code, label) {
             rules.classify(label)
         } else {
             Status::Unknown
@@ -562,5 +578,21 @@ mod tests {
         );
         let error = fetch_cancellable(&url, 2, &AtomicBool::new(false)).unwrap_err();
         assert_eq!(error.retry_after, Some(120));
+    }
+    #[test]
+    fn contradictory_code_label_is_unknown() {
+        for (code, label) in [
+            (500, "Operational"),
+            (100, "Service Disruption"),
+            (300, "Maintenance"),
+            (200, "Investigating"),
+        ] {
+            assert_eq!(
+                classify("gitlab", &payload(code, label), &rules())
+                    .unwrap()
+                    .0,
+                Status::Unknown
+            );
+        }
     }
 }
