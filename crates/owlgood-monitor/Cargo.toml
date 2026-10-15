@@ -1,10 +1,10 @@
 [package]
-name = "isdown-monitor"
+name = "owlgood-monitor"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-isdown-core = { path = "../isdown-core" }
+owlgood-core = { path = "../owlgood-core" }
 serde_json = "1"
 httpdate = "1"
 

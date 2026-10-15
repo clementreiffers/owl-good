@@ -1,14 +1,14 @@
 //! AppKit bridge. Cocoa objects and target/action callbacks are main-thread only.
 use crate::policy::{NotificationState, ServiceRowLayout, rgb, status_label};
 use block2::RcBlock;
-use isdown_core::{Config, Observation, Site, Status, aggregate, save_config, validate_config};
-use isdown_monitor::{Command, Monitor};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject, Bool, ProtocolObject};
 use objc2::{AnyThread, DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::*;
 use objc2_foundation::*;
 use objc2_user_notifications::*;
+use owlgood_core::{Config, Observation, Site, Status, aggregate, save_config, validate_config};
+use owlgood_monitor::{Command, Monitor};
 use std::{
     cell::{Cell, OnceCell, RefCell},
     collections::HashMap,
@@ -170,7 +170,7 @@ define_class!(
         #[unsafe(method(restoreRules:))]
         fn restore_rules(&self, _: Option<&AnyObject>) {
             if let Some(s) = self.ivars().settings.get() {
-                let rules = isdown_core::Rules::default();
+                let rules = owlgood_core::Rules::default();
                 s.fail.setStringValue(&ns(&rules.fail)); s.warning.setStringValue(&ns(&rules.warning)); s.success.setStringValue(&ns(&rules.success));
                 s.message.setStringValue(&ns("Règles GitLab restaurées dans le formulaire. Enregistrez pour appliquer."));
             }
@@ -231,7 +231,7 @@ pub fn run(config: Config, path: PathBuf) -> Result<(), String> {
     let mtm = MainThreadMarker::new().ok_or("AppKit doit démarrer sur le thread principal")?;
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
-    let monitor = isdown_monitor::start(config.clone());
+    let monitor = owlgood_monitor::start(config.clone());
     let (click_sender, clicks) = std::sync::mpsc::channel();
     let notification = NotificationDelegate::alloc().set_ivars(click_sender);
     // SAFETY: NSObject init initializes the allocated delegate.
@@ -247,7 +247,7 @@ pub fn run(config: Config, path: PathBuf) -> Result<(), String> {
             started: Instant::now(),
             clicks,
             icons: crate::icons::start(),
-            smoke: std::env::var_os("ISDOWN_SMOKE_TEST").is_some(),
+            smoke: std::env::var_os("OWLGOOD_SMOKE_TEST").is_some(),
         }),
         status_item: OnceCell::new(),
         popover: OnceCell::new(),
@@ -281,7 +281,7 @@ impl Delegate {
                 button.setTarget(Some(self));
                 button.setAction(Some(sel!(togglePanel:)));
             }
-            button.setToolTip(Some(&ns("isDown — état des services")));
+            button.setToolTip(Some(&ns("OwlGood — état des services")));
         }
         let _ = self.ivars().status_item.set(item);
         let controller = NSViewController::new(mtm);
@@ -304,7 +304,7 @@ impl Delegate {
         };
         timer.setTolerance(0.2);
         let _ = self.ivars().timer.set(timer);
-        eprintln!("isDown: native status item ready");
+        eprintln!("OwlGood: native status item ready");
         if self.ivars().state.borrow().smoke {
             self.toggle();
             self.open_settings();
@@ -320,12 +320,12 @@ impl Delegate {
                     }
                 }
                 self.select_section(0);
-                eprintln!("isDown: smoke verified all settings navigation selections");
+                eprintln!("OwlGood: smoke verified all settings navigation selections");
             }
-            if std::env::var_os("ISDOWN_SMOKE_OPTIONS").is_some() {
+            if std::env::var_os("OWLGOOD_SMOKE_OPTIONS").is_some() {
                 self.open_options();
             }
-            eprintln!("isDown: smoke opened popover and settings");
+            eprintln!("OwlGood: smoke opened popover and settings");
         }
     }
 
@@ -354,7 +354,7 @@ impl Delegate {
                         .config
                         .sites
                         .iter()
-                        .find(|site| format!("isdown-{}", site.id) == id)
+                        .find(|site| format!("owlgood-{}", site.id) == id)
                         .map(|site| site.url.clone())
                 })
                 .collect::<Vec<_>>()
@@ -414,13 +414,13 @@ impl Delegate {
         let state = self.ivars().state.borrow();
         if state.smoke
             && state.started.elapsed().as_secs()
-                >= std::env::var("ISDOWN_SMOKE_SECONDS")
+                >= std::env::var("OWLGOOD_SMOKE_SECONDS")
                     .ok()
                     .and_then(|s| s.parse::<u64>().ok())
                     .unwrap_or(3)
                     .clamp(3, 30)
         {
-            eprintln!("isDown: smoke completed");
+            eprintln!("OwlGood: smoke completed");
             drop(state);
             NSApplication::sharedApplication(self.mtm()).terminate(None);
         }
@@ -684,6 +684,53 @@ impl Delegate {
         view.setContentTintColor(Some(&self.color(status)));
         view
     }
+    /// Vector template drawn by AppKit at the destination's backing scale.
+    fn owl_icon(&self) -> Retained<NSImage> {
+        let draw = RcBlock::new(|_: NSRect| {
+            NSColor::blackColor().setStroke();
+            NSColor::blackColor().setFill();
+            let outline = NSBezierPath::bezierPath();
+            outline.setLineWidth(1.6);
+            outline.moveToPoint(NSPoint::new(3., 3.));
+            outline.lineToPoint(NSPoint::new(8., 5.));
+            outline.curveToPoint_controlPoint1_controlPoint2(
+                NSPoint::new(16., 5.),
+                NSPoint::new(10., 4.),
+                NSPoint::new(14., 4.),
+            );
+            outline.lineToPoint(NSPoint::new(21., 3.));
+            outline.lineToPoint(NSPoint::new(20., 14.));
+            outline.curveToPoint_controlPoint1_controlPoint2(
+                NSPoint::new(12., 21.),
+                NSPoint::new(19., 19.),
+                NSPoint::new(16., 21.),
+            );
+            outline.curveToPoint_controlPoint1_controlPoint2(
+                NSPoint::new(4., 14.),
+                NSPoint::new(8., 21.),
+                NSPoint::new(5., 19.),
+            );
+            outline.closePath();
+            outline.stroke();
+            for x in [4.5, 12.5] {
+                let eye = NSBezierPath::bezierPathWithOvalInRect(rect(x, 8., 7., 7.));
+                eye.setLineWidth(1.4);
+                eye.stroke();
+                NSBezierPath::bezierPathWithOvalInRect(rect(x + 2.3, 10.3, 2.4, 2.4)).fill();
+            }
+            let beak = NSBezierPath::bezierPath();
+            beak.moveToPoint(NSPoint::new(10.5, 16.));
+            beak.lineToPoint(NSPoint::new(13.5, 16.));
+            beak.lineToPoint(NSPoint::new(12., 18.));
+            beak.closePath();
+            beak.fill();
+            Bool::YES
+        });
+        let image =
+            NSImage::imageWithSize_flipped_drawingHandler(NSSize::new(24., 24.), true, &draw);
+        image.setTemplate(true);
+        image
+    }
     fn menu_icon(&self) -> Option<Retained<NSImage>> {
         let state = self.ivars().state.borrow();
         let a = &state.config.appearance;
@@ -698,17 +745,16 @@ impl Delegate {
                 .as_ref()
                 .and_then(|path| NSImage::initWithContentsOfFile(NSImage::alloc(), &ns(path)))
                 .or_else(|| {
-                    NSImage::imageWithSystemSymbolName_accessibilityDescription(
-                        &ns(&a.menu_symbol),
-                        Some(&ns("isDown")),
-                    )
+                    if a.menu_symbol == "owlgood" {
+                        Some(self.owl_icon())
+                    } else {
+                        NSImage::imageWithSystemSymbolName_accessibilityDescription(
+                            &ns(&a.menu_symbol),
+                            Some(&ns("OwlGood")),
+                        )
+                    }
                 })
-                .or_else(|| {
-                    NSImage::imageWithSystemSymbolName_accessibilityDescription(
-                        &ns("network"),
-                        Some(&ns("isDown")),
-                    )
-                })
+                .or_else(|| Some(self.owl_icon()))
         })?;
         self.ivars()
             .icon_cache
@@ -918,7 +964,7 @@ impl Delegate {
                 NSCellImagePosition::ImageLeading
             });
             button.setToolTip(Some(&ns(&format!(
-                "isDown — {}",
+                "OwlGood — {}",
                 if config.paused {
                     "Suspendu"
                 } else {
@@ -970,7 +1016,7 @@ impl Delegate {
                 },
                 sel!(pause:),
             ),
-            ("power", "Quitter isDown", sel!(quit:)),
+            ("power", "Quitter OwlGood", sel!(quit:)),
         ]
         .iter()
         .enumerate()
@@ -1181,7 +1227,7 @@ impl Delegate {
         }
     }
     fn build_settings(&self) {
-        let window = self.window("Réglages — isDown", 884., 638.);
+        let window = self.window("Réglages — OwlGood", 884., 638.);
         window.setStyleMask(
             window.styleMask()
                 | NSWindowStyleMask::FullSizeContentView
@@ -1198,13 +1244,13 @@ impl Delegate {
         // Do not draw a focus ring around the whole settings pane.
         tabs.setFocusRingType(NSFocusRingType::None);
         let sidebar = NSView::initWithFrame(NSView::alloc(self.mtm()), rect(0., 0., 176., 614.));
-        self.settings_icon(
-            &sidebar,
-            "waveform.path.ecg",
-            &NSColor::systemBlueColor(),
-            rect(16., 548., 38., 38.),
-        );
-        let brand = self.label("isDown", rect(64., 563., 100., 26.), 18.);
+        let owl =
+            NSImageView::initWithFrame(NSImageView::alloc(self.mtm()), rect(16., 548., 38., 38.));
+        owl.setImage(Some(&self.owl_icon()));
+        owl.setContentTintColor(Some(&NSColor::systemPurpleColor()));
+        owl.setAccessibilityLabel(Some(&ns("OwlGood")));
+        sidebar.addSubview(&owl);
+        let brand = self.label("OwlGood", rect(64., 563., 100., 26.), 18.);
         brand.setFont(Some(&NSFont::systemFontOfSize_weight(18., 0.23)));
         sidebar.addSubview(&brand);
         let caption = self.label("Réglages", rect(64., 546., 100., 20.), 11.);
@@ -1375,7 +1421,7 @@ impl Delegate {
         save.setBezelColor(Some(&NSColor::controlAccentColor()));
         root.addSubview(&save);
         window.setContentView(Some(&root));
-        let json_window = self.window("Configuration avancée — isDown", 700., 520.);
+        let json_window = self.window("Configuration avancée — OwlGood", 700., 520.);
         let json_root = NSView::initWithFrame(NSView::alloc(self.mtm()), rect(0., 0., 700., 520.));
         json_root.addSubview(&self.label("Configuration JSON", rect(20., 470., 640., 28.), 20.));
         json_root.addSubview(&self.label(
@@ -2032,7 +2078,7 @@ impl Delegate {
             "Couleur : inconnu",
             "Confirmations avant alerte",
             "Délai entre alertes (s)",
-            "Symbole de la barre des menus",
+            "Symbole (owlgood ou SF Symbol)",
             "Fichier icône (facultatif)",
             "Taille de l’icône du menu",
             "Taille de la pastille",
@@ -2229,15 +2275,15 @@ impl Delegate {
         if NSBundle::mainBundle().bundleIdentifier().is_none() {
             self.alert(
                 "Notifications",
-                "Lancez isDown.app pour activer les notifications natives.",
+                "Lancez OwlGood.app pour activer les notifications natives.",
             );
             return;
         }
         let completion = RcBlock::new(|allowed: Bool, error: *mut NSError| {
             if !error.is_null() {
-                eprintln!("isDown: notification authorization failed");
+                eprintln!("OwlGood: notification authorization failed");
             } else {
-                eprintln!("isDown: notification authorization {}", allowed.as_bool());
+                eprintln!("OwlGood: notification authorization {}", allowed.as_bool());
             }
         });
         UNUserNotificationCenter::currentNotificationCenter()
@@ -2246,7 +2292,7 @@ impl Delegate {
                 &completion,
             );
         if let Some(settings) = self.ivars().settings.get() {
-            settings.message.setStringValue(&ns("Autorisation demandée. Gérez-la aussi dans Réglages Système → Notifications → isDown."));
+            settings.message.setStringValue(&ns("Autorisation demandée. Gérez-la aussi dans Réglages Système → Notifications → OwlGood."));
         }
     }
     fn notify(&self, name: &str, summary: &str, status: Status, id: &str, sound: bool) {
@@ -2261,13 +2307,13 @@ impl Delegate {
             content.setSound(Some(&UNNotificationSound::defaultSound()));
         }
         let request = UNNotificationRequest::requestWithIdentifier_content_trigger(
-            &ns(&format!("isdown-{id}")),
+            &ns(&format!("owlgood-{id}")),
             &content,
             None,
         );
         let completion = RcBlock::new(|error: *mut NSError| {
             if !error.is_null() {
-                eprintln!("isDown: notification delivery failed (check system permission)");
+                eprintln!("OwlGood: notification delivery failed (check system permission)");
             }
         });
         UNUserNotificationCenter::currentNotificationCenter()

@@ -1,4 +1,4 @@
-# Plan de réalisation — isDown
+# Plan de réalisation — OwlGood
 
 ## 1. Objectif et périmètre
 
@@ -23,10 +23,10 @@ Découpage cible en workspace Cargo :
 
 | Crate | Responsabilité |
 |---|---|
-| `isdown-core` | États, modèles, classification, agrégation, transitions et décisions pures |
-| `isdown-config` | Configuration versionnée, validation, migrations et persistance |
-| `isdown-monitor` | Réseau, adaptateurs de pages, règles regex, ordonnanceur |
-| `isdown-macos` | AppKit, icônes, paramètres, notifications et lancement de l’application |
+| `owlgood-core` | États, modèles, classification, agrégation, transitions et décisions pures |
+| `owlgood-config` | Configuration versionnée, validation, migrations et persistance |
+| `owlgood-monitor` | Réseau, adaptateurs de pages, règles regex, ordonnanceur |
+| `owlgood-macos` | AppKit, icônes, paramètres, notifications et lancement de l’application |
 
 Le cœur reçoit des observations et produit un nouvel état et des effets à exécuter. Horloge, transport, stockage et notifications sont injectables. Employer fonctions pures, enums exhaustives, itérateurs et emprunts quand ils améliorent le code ; ne pas imposer de copies ou de couches d’abstraction pour afficher un style fonctionnel.
 
@@ -131,7 +131,7 @@ Mesurer sur une machine identifiée, avec 1, 10 et 50 services : taille du bundl
 
 ## 7. Mise en œuvre et historique Git
 
-Le socle initial était un binaire Cargo en édition 2024 sans dépendances. Le développement autorisé ensuite se déroule dans un workspace à trois crates : `isdown-core` (incluant la configuration), `isdown-monitor` et `isdown-macos`. La configuration reste dans le cœur pour éviter une séparation supplémentaire tant que son périmètre reste compact. Le format retenu est JSON, éditable dans les préférences avancées.
+Le socle initial était un binaire Cargo en édition 2024 sans dépendances. Le développement autorisé ensuite se déroule dans un workspace à trois crates : `owlgood-core` (incluant la configuration), `owlgood-monitor` et `owlgood-macos`. La configuration reste dans le cœur pour éviter une séparation supplémentaire tant que son périmètre reste compact. Le format retenu est JSON, éditable dans les préférences avancées.
 
 La restriction initiale d’écriture dans `.git` a été levée par l’utilisateur. Le dépôt est créé, les commits locaux sont autorisés et les worktrees sont opérationnels :
 

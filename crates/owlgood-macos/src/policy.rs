@@ -1,5 +1,5 @@
 //! Pure presentation and notification policies, independent of Cocoa.
-use isdown_core::{Notifications, Status};
+use owlgood_core::{Notifications, Status};
 
 /// Shared compact row metrics, including the status indicator overlapping the icon’s bottom-right corner.
 pub(crate) struct ServiceRowLayout {
@@ -13,7 +13,7 @@ pub(crate) struct ServiceRowLayout {
     pub text_y: f64,
 }
 impl ServiceRowLayout {
-    pub fn new(a: &isdown_core::Appearance) -> Self {
+    pub fn new(a: &owlgood_core::Appearance) -> Self {
         let name_height = (a.font_size * 1.3).ceil().max(17.);
         let detail_size = (a.font_size - 2.).max(11.);
         let detail_height = (detail_size * 1.3).ceil().max(15.);
@@ -134,7 +134,7 @@ mod tests {
     }
     #[test]
     fn compact_row_overlays_dot_on_bottom_right_corner() {
-        let appearance = isdown_core::Appearance::default();
+        let appearance = owlgood_core::Appearance::default();
         let row = ServiceRowLayout::new(&appearance);
         assert_eq!(row.row_height, 44.);
         assert_eq!(row.text_y, 6.);
@@ -149,7 +149,7 @@ mod tests {
         for font_size in [10., 13., 32.] {
             for icon_size in [12., 28., 64.] {
                 for show_site_icons in [false, true] {
-                    let a = isdown_core::Appearance {
+                    let a = owlgood_core::Appearance {
                         font_size,
                         icon_size,
                         show_site_icons,

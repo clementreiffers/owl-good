@@ -24,7 +24,7 @@ for (const [message, expected] of [
 
 test("release notes include features and breaking changes", async () => {
   const notes = await generateNotes(pluginOptions("@semantic-release/release-notes-generator"), {
-    options: { repositoryUrl: "https://github.com/example/isDown" },
+    options: { repositoryUrl: "https://github.com/example/OwlGood" },
     commits: [{ hash: "a".repeat(40), message: "feat!: new config\n\nBREAKING CHANGE: migrate config" }],
     lastRelease: { gitTag: "1.0.0" },
     nextRelease: { gitTag: "2.0.0", version: "2.0.0" },

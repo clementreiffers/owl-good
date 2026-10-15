@@ -8,8 +8,8 @@ if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; th
   exit 1
 fi
 
-ISDOWN_RELEASE_VERSION="$version" ./scripts/build-app.sh --universal
-app="$PWD/target/release/isDown.app"
+OWLGOOD_RELEASE_VERSION="$version" ./scripts/build-app.sh --universal
+app="$PWD/target/release/OwlGood.app"
 actual_version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")
 [[ "$actual_version" == "$version" ]] || { echo 'Bundle version mismatch' >&2; exit 1; }
 verify_universal() {
@@ -20,19 +20,19 @@ verify_universal() {
     exit 1
   }
 }
-verify_universal "$app/Contents/MacOS/isdown"
+verify_universal "$app/Contents/MacOS/owlgood"
 codesign --verify --deep --strict "$app"
 
 staging=$(mktemp -d)
 trap 'rm -rf "$staging"' EXIT
 mkdir -p release "$staging/dmg" "$staging/extracted"
-base="isDown-${version}-macos-universal"
-ditto "$app" "$staging/dmg/isDown.app"
+base="OwlGood-${version}-macos-universal"
+ditto "$app" "$staging/dmg/OwlGood.app"
 ln -s /Applications "$staging/dmg/Applications"
-hdiutil create -volname isDown -srcfolder "$staging/dmg" -ov -format UDZO "release/$base.dmg"
+hdiutil create -volname OwlGood -srcfolder "$staging/dmg" -ov -format UDZO "release/$base.dmg"
 hdiutil verify "release/$base.dmg"
-tar -czf "release/$base.app.tar.gz" -C target/release isDown.app
+tar -czf "release/$base.app.tar.gz" -C target/release OwlGood.app
 tar -xzf "release/$base.app.tar.gz" -C "$staging/extracted"
-codesign --verify --deep --strict "$staging/extracted/isDown.app"
-verify_universal "$staging/extracted/isDown.app/Contents/MacOS/isdown"
+codesign --verify --deep --strict "$staging/extracted/OwlGood.app"
+verify_universal "$staging/extracted/OwlGood.app/Contents/MacOS/owlgood"
 (cd release && shasum -a 256 "$base.dmg" "$base.app.tar.gz" > SHA256SUMS.txt)

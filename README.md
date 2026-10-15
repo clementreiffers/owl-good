@@ -1,4 +1,6 @@
-# isDown
+# OwlGood
+
+**Vos services à l’œil.** Une petite chouette dans votre barre de menus pour suivre vos services et vous prévenir des incidents.
 
 Application macOS native écrite en Rust pour surveiller des pages de statut depuis la barre de menus. Interface AppKit, sans WebView, réseau via libcurl système et règles compilées avec `regex`.
 
@@ -9,7 +11,7 @@ Prérequis : macOS 13 ou ultérieur, Rust stable (édition 2024) et les Command 
 ```sh
 ./scripts/check.sh
 ./scripts/build-app.sh
-open target/release/isDown.app
+open target/release/OwlGood.app
 ```
 
 Pour développer sans recréer le bundle release :
@@ -38,7 +40,7 @@ La CI GitHub Actions vérifie les tests de versionnement, le formatage Rust, Cli
 
 Comme dans `litellm-ember`, les tags sont au format `1.2.3`, sans préfixe `v`, et la première release est `1.0.0`. Les notes sont générées automatiquement. La version calculée est injectée dans les deux champs de version du bundle macOS ; les manifestes Cargo gardent leur version de développement, sans commit automatique de versionnement.
 
-Chaque GitHub Release contient un DMG, une archive `isDown-VERSION-macos-universal.app.tar.gz` et `SHA256SUMS.txt`. Le binaire est compilé en profil release pour Apple Silicon et Intel, puis assemblé avec `lipo`. Le packaging vérifie les architectures, la version du bundle, la signature ad hoc et l’intégrité du DMG. L’application reste non notarialisée, comme le build local.
+Chaque GitHub Release contient un DMG, une archive `OwlGood-VERSION-macos-universal.app.tar.gz` et `SHA256SUMS.txt`. Le binaire est compilé en profil release pour Apple Silicon et Intel, puis assemblé avec `lipo`. Le packaging vérifie les architectures, la version du bundle, la signature ad hoc et l’intégrité du DMG. L’application reste non notarialisée, comme le build local.
 
 Le workflow utilise uniquement le secret automatique `GITHUB_TOKEN` avec `contents: write` pour publier. Aucun secret Tauri n’est nécessaire pour cette application AppKit. Le dépôt GitHub doit avoir Actions activé et autoriser la création de tags et de releases par ce token.
 
@@ -78,17 +80,23 @@ L’URL publique reste `https://status.gitlab.com/`. Les regex s’appliquent au
 | Avertissement | Maintenance, Under Maintenance, Planned Maintenance, Degraded Performance, Partial Service Disruption |
 | Échec | Service Disruption, Security Event |
 
-Les alias de présentation `Degraded`, `Partial outage`, `Major outage` et `Critical` sont également prévus. L’inventaire et sa fixture sont documentés dans [les fixtures](crates/isdown-monitor/tests/fixtures/README.md). Un vocabulaire ou un code nouveau reste inconnu.
+Les alias de présentation `Degraded`, `Partial outage`, `Major outage` et `Critical` sont également prévus. L’inventaire et sa fixture sont documentés dans [les fixtures](crates/owlgood-monitor/tests/fixtures/README.md). Un vocabulaire ou un code nouveau reste inconnu.
 
 Chaque site possède trois expressions personnalisables. La priorité est **échec > avertissement > succès** ; une expression vide désactive cette catégorie, et aucune correspondance donne un état inconnu. Le moteur Rust `regex` ne prend pas en charge les backreferences ni les look-around. Les expressions sont validées avant sauvegarde et compilées une fois par configuration.
 
 Pour un autre fournisseur, choisir le mode `regex` et renseigner une URL et des expressions adaptées au contenu retourné. Le mode `statusio` attend directement une URL JSON Status.io. Ne pas utiliser une recherche trop générale telle que `Operational` sur une page mêlant plusieurs services et leur historique : définir des règles qui identifient le statut courant.
 
+## Identité visuelle
+
+OwlGood associe « owl » (chouette) et « all good ». Sa chouette vectorielle à grands yeux veille sur vos services. L’icône monochrome de la barre de menus suit le contraste macOS ; la pastille séparée indique l’état réel, y compris les incidents. Le dessin réutilisable est dans `resources/owlgood-menubar.svg` ; son équivalent AppKit est dessiné à la résolution de l’écran.
+
 ## Préférences et données
 
 La configuration JSON est enregistrée dans :
 
-`~/Library/Application Support/isDown/config.json`
+`~/Library/Application Support/OwlGood/config.json`
+
+Les crates et le binaire utilisent le nom `owlgood`, le bundle utilise `com.owlgood.app`, et les variables d’environnement sont préfixées `OWLGOOD_`. Au premier lancement, les anciennes préférences sont copiées vers ce dossier si aucune configuration OwlGood n’existe, sans supprimer la source ni écraser une configuration existante. Un chemin explicite via `OWLGOOD_CONFIG_PATH` désactive cette migration. Le changement d’identifiant macOS nécessite une nouvelle autorisation des notifications.
 
 Les réglages natifs regroupent Services, Apparence et Notifications dans une barre latérale, avec des interrupteurs macOS. Les règles de détection et la personnalisation détaillée sont repliées par défaut ; le menu des services donne accès à l’éditeur JSON. Un aperçu permet de comparer les thèmes et le rendu des icônes.
 
@@ -101,16 +109,16 @@ Les options couvrent les services, URL, règles, activation, intervalles, timeou
 Pour employer un autre fichier, notamment lors de tests :
 
 ```sh
-ISDOWN_CONFIG_PATH=/tmp/isdown-config.json target/release/isDown.app/Contents/MacOS/isdown
+OWLGOOD_CONFIG_PATH=/tmp/owlgood-config.json target/release/OwlGood.app/Contents/MacOS/owlgood
 ```
 
 Les notifications nécessitent l’autorisation macOS, demandée explicitement depuis les paramètres. Leur politique comporte confirmation, délai anti-répétition, avertissements et rétablissements configurables. Le refus de permission ne bloque pas la surveillance. Pour tester la livraison réelle, lancer le bundle `.app` ; le simple lancement du binaire par Cargo ne garantit pas une identité de notification valide.
 
 ## Architecture et contribution
 
-- `isdown-core` : configuration, validation, regex et agrégation pures.
-- `isdown-monitor` : collecte réseau et ordonnanceur hors du thread principal.
-- `isdown-macos` : AppKit, présentation et notifications.
+- `owlgood-core` : configuration, validation, regex et agrégation pures.
+- `owlgood-monitor` : collecte réseau et ordonnanceur hors du thread principal.
+- `owlgood-macos` : AppKit, présentation et notifications.
 
 Les tests automatiques emploient des fixtures, un serveur HTTP local et des politiques pures. Les essais GitLab en ligne ne doivent pas conditionner les tests ordinaires.
 

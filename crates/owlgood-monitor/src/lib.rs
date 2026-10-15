@@ -1,5 +1,5 @@
 //! Bounded background polling. AppKit never waits on network I/O.
-use isdown_core::{CompiledRules, Config, Observation, Site, Status};
+use owlgood_core::{CompiledRules, Config, Observation, Site, Status};
 use std::{
     collections::{HashMap, HashSet},
     sync::{
@@ -59,7 +59,7 @@ fn rules(config: &Config) -> HashMap<String, Arc<CompiledRules>> {
         .collect()
 }
 fn run(mut config: Config, commands: Receiver<Command>, observations: Sender<Observation>) {
-    if isdown_core::validate_config(&config).is_err() {
+    if owlgood_core::validate_config(&config).is_err() {
         return;
     }
     let (done_tx, done_rx) = mpsc::channel::<Completion>();
@@ -84,7 +84,7 @@ fn run(mut config: Config, commands: Receiver<Command>, observations: Sender<Obs
                     refresh_pending.extend(active.keys().cloned());
                 }
                 Ok(Command::UpdateConfig(next)) => {
-                    if isdown_core::validate_config(&next).is_ok() {
+                    if owlgood_core::validate_config(&next).is_ok() {
                         for cancel in active.values() {
                             cancel.store(true, Ordering::Relaxed);
                         }
@@ -202,7 +202,7 @@ fn fetch_cancellable(url: &str, timeout: u64, cancel: &AtomicBool) -> Result<Str
     request.follow_location(true).map_err(|e| e.to_string())?;
     request.max_redirections(5).map_err(|e| e.to_string())?;
     request
-        .useragent("isDown/0.1 (+macOS status monitor)")
+        .useragent("OwlGood/0.1 (+macOS status monitor)")
         .map_err(|e| e.to_string())?;
     request.progress(true).map_err(|e| e.to_string())?;
     let mut body = Vec::new();
@@ -369,7 +369,7 @@ pub fn classify(
             labels.push(label.to_string());
         }
     }
-    Ok((isdown_core::aggregate(&statuses, 0, 0), labels.join(" · ")))
+    Ok((owlgood_core::aggregate(&statuses, 0, 0), labels.join(" · ")))
 }
 
 #[cfg(test)]
@@ -380,7 +380,7 @@ mod tests {
         net::TcpListener,
     };
     fn rules() -> CompiledRules {
-        CompiledRules::new(&isdown_core::Rules::default()).unwrap()
+        CompiledRules::new(&owlgood_core::Rules::default()).unwrap()
     }
     fn payload(code: u64, label: &str) -> String {
         serde_json::json!({"result":{"status_overall":{"status":label,"status_code":code},"incidents":[{"status":"Service Disruption","status_code":500}]}}).to_string()
@@ -531,7 +531,7 @@ mod tests {
     }
     #[test]
     fn custom_regex_and_historical_events() {
-        let custom = CompiledRules::new(&isdown_core::Rules {
+        let custom = CompiledRules::new(&owlgood_core::Rules {
             fail: "^Operational$".into(),
             warning: String::new(),
             success: String::new(),

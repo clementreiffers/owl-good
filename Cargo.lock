@@ -246,53 +246,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "isdown"
-version = "0.1.0"
-dependencies = [
- "isdown-core",
- "isdown-macos",
- "isdown-monitor",
-]
-
-[[package]]
-name = "isdown-core"
-version = "0.1.0"
-dependencies = [
- "regex",
- "serde",
- "serde_json",
- "tempfile",
- "url",
-]
-
-[[package]]
-name = "isdown-macos"
-version = "0.1.0"
-dependencies = [
- "block2",
- "curl",
- "isdown-core",
- "isdown-monitor",
- "objc2",
- "objc2-app-kit",
- "objc2-foundation",
- "objc2-user-notifications",
- "regex",
- "serde_json",
- "url",
-]
-
-[[package]]
-name = "isdown-monitor"
-version = "0.1.0"
-dependencies = [
- "curl",
- "httpdate",
- "isdown-core",
- "serde_json",
-]
-
-[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -350,6 +303,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d49e936b501e5c5bf01fda3a9452ff86dc3ea98ad5f283e1455153142d97518c"
 dependencies = [
  "bitflags",
+ "block2",
  "objc2",
  "objc2-core-foundation",
  "objc2-foundation",
@@ -417,6 +371,53 @@ dependencies = [
  "libc",
  "pkg-config",
  "vcpkg",
+]
+
+[[package]]
+name = "owlgood"
+version = "0.1.0"
+dependencies = [
+ "owlgood-core",
+ "owlgood-macos",
+ "owlgood-monitor",
+]
+
+[[package]]
+name = "owlgood-core"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "url",
+]
+
+[[package]]
+name = "owlgood-macos"
+version = "0.1.0"
+dependencies = [
+ "block2",
+ "curl",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "objc2-user-notifications",
+ "owlgood-core",
+ "owlgood-monitor",
+ "regex",
+ "serde_json",
+ "url",
+]
+
+[[package]]
+name = "owlgood-monitor"
+version = "0.1.0"
+dependencies = [
+ "curl",
+ "httpdate",
+ "owlgood-core",
+ "serde_json",
 ]
 
 [[package]]

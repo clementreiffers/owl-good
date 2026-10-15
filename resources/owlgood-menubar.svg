@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <title>OwlGood — Vos services à l’œil</title>
+  <g stroke="currentColor" fill="none">
+    <path stroke-width="1.6" d="M3 3 L8 5 C10 4 14 4 16 5 L21 3 L20 14 C19 19 16 21 12 21 C8 21 5 19 4 14 Z"/>
+    <g stroke-width="1.4"><circle cx="8" cy="11.5" r="3.5"/><circle cx="16" cy="11.5" r="3.5"/></g>
+  </g>
+  <g fill="currentColor"><circle cx="8" cy="11.5" r="1.2"/><circle cx="16" cy="11.5" r="1.2"/><path d="M10.5 16 H13.5 L12 18 Z"/></g>
+</svg>

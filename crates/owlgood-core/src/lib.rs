@@ -126,8 +126,8 @@ impl Default for Appearance {
     fn default() -> Self {
         Self {
             theme: "system".into(),
-            menu_title: "isDown".into(),
-            menu_symbol: "network".into(),
+            menu_title: "OwlGood".into(),
+            menu_symbol: "owlgood".into(),
             menu_icon_path: None,
             menu_icon_size: 18.,
             badge_size: 9.,
@@ -239,13 +239,13 @@ pub fn aggregate(observations: &[Observation], now: u64, stale_after_secs: u64) 
     result
 }
 pub fn config_path() -> PathBuf {
-    if let Some(path) = std::env::var_os("ISDOWN_CONFIG_PATH").filter(|p| !p.is_empty()) {
+    if let Some(path) = std::env::var_os("OWLGOOD_CONFIG_PATH").filter(|p| !p.is_empty()) {
         return PathBuf::from(path);
     }
     let base = std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
-    base.join("Library/Application Support/isDown/config.json")
+    base.join("Library/Application Support/OwlGood/config.json")
 }
 fn validate_icon_path(path: Option<&str>) -> Result<(), String> {
     if let Some(path) = path
@@ -353,6 +353,31 @@ pub fn validate_config(c: &Config) -> Result<(), String> {
     Ok(())
 }
 pub fn load_config(path: &Path) -> Result<Config, String> {
+    let explicit = std::env::var_os("OWLGOOD_CONFIG_PATH").filter(|p| !p.is_empty());
+    if explicit.is_none() && path == config_path() {
+        let base = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
+        return load_config_migrating(
+            path,
+            &base.join("Library/Application Support/isDown/config.json"),
+        );
+    }
+    read_config(path)
+}
+
+fn load_config_migrating(path: &Path, legacy: &Path) -> Result<Config, String> {
+    if !path.try_exists().map_err(|e| e.to_string())?
+        && legacy.try_exists().map_err(|e| e.to_string())?
+    {
+        let config = read_config(legacy)?;
+        save_config(path, &config)?;
+        return Ok(config);
+    }
+    read_config(path)
+}
+
+fn read_config(path: &Path) -> Result<Config, String> {
     let file = match fs::File::open(path) {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Config::default()),
@@ -365,7 +390,14 @@ pub fn load_config(path: &Path) -> Result<Config, String> {
     if bytes.len() > 2 * 1024 * 1024 {
         return Err("Configuration exceeds 2 MiB".into());
     }
-    let c: Config = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    let mut c: Config = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    // Adopt the new branding for legacy defaults, preserving custom icons/titles.
+    if c.appearance.menu_title == "isDown" {
+        c.appearance.menu_title = "OwlGood".into();
+        if c.appearance.menu_symbol == "network" && c.appearance.menu_icon_path.is_none() {
+            c.appearance.menu_symbol = "owlgood".into();
+        }
+    }
     validate_config(&c)?;
     Ok(c)
 }
@@ -389,6 +421,64 @@ pub fn save_config(path: &Path, c: &Config) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn migrates_legacy_file_without_overwriting_current_preferences() {
+        let dir = tempfile::tempdir().unwrap();
+        let legacy = dir.path().join("legacy/config.json");
+        let current = dir.path().join("OwlGood/config.json");
+        let mut config = Config {
+            interval_secs: 60,
+            ..Config::default()
+        };
+        save_config(&legacy, &config).unwrap();
+        assert_eq!(
+            load_config_migrating(&current, &legacy)
+                .unwrap()
+                .interval_secs,
+            60
+        );
+        assert!(legacy.exists());
+        assert!(current.exists());
+        config.interval_secs = 90;
+        save_config(&current, &config).unwrap();
+        assert_eq!(
+            load_config_migrating(&current, &legacy)
+                .unwrap()
+                .interval_secs,
+            90
+        );
+        fs::remove_file(&current).unwrap();
+        fs::write(&legacy, "invalid JSON").unwrap();
+        assert!(load_config_migrating(&current, &legacy).is_err());
+        assert!(!current.exists());
+    }
+    #[test]
+    fn legacy_branding_preserves_custom_preferences() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let mut config = Config::default();
+        config.appearance.menu_title = "isDown".into();
+        config.appearance.menu_symbol = "network".into();
+        save_config(&path, &config).unwrap();
+        let migrated = load_config(&path).unwrap();
+        assert_eq!(migrated.appearance.menu_title, "OwlGood");
+        assert_eq!(migrated.appearance.menu_symbol, "owlgood");
+        assert_eq!(migrated.sites.len(), config.sites.len());
+        config.appearance.menu_icon_path = Some("/tmp/custom.png".into());
+        save_config(&path, &config).unwrap();
+        let custom = load_config(&path).unwrap();
+        assert_eq!(
+            custom.appearance.menu_icon_path,
+            config.appearance.menu_icon_path
+        );
+        assert_eq!(custom.appearance.menu_symbol, "network");
+        config.appearance.menu_title = "My services".into();
+        save_config(&path, &config).unwrap();
+        assert_eq!(
+            load_config(&path).unwrap().appearance.menu_title,
+            "My services"
+        );
+    }
     #[test]
     fn defaults_valid() {
         validate_config(&Config::default()).unwrap();
@@ -574,7 +664,7 @@ mod tests {
     #[test]
     fn menu_appearance_validation_and_defaults() {
         let mut c = Config::default();
-        assert_eq!(c.appearance.menu_symbol, "network");
+        assert_eq!(c.appearance.menu_symbol, "owlgood");
         assert!(c.appearance.show_badge);
         c.appearance.menu_icon_size = 33.;
         assert!(validate_config(&c).is_err());

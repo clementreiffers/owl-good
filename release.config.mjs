@@ -9,8 +9,8 @@ export default {
     }],
     ["@semantic-release/github", {
       assets: [
-        "release/isDown-*-macos-universal.dmg",
-        "release/isDown-*-macos-universal.app.tar.gz",
+        "release/OwlGood-*-macos-universal.dmg",
+        "release/OwlGood-*-macos-universal.app.tar.gz",
         "release/SHA256SUMS.txt",
       ],
       successComment: false,

@@ -1,5 +1,5 @@
 {
-  "name": "isdown-release",
+  "name": "owlgood-release",
   "private": true,
   "type": "module",
   "engines": { "node": ">=24.10.0" },

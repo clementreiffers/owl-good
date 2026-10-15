@@ -1,12 +1,12 @@
 [package]
-name = "isdown"
+name = "owlgood"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-isdown-core = { path = "crates/isdown-core" }
-isdown-monitor = { path = "crates/isdown-monitor" }
-isdown-macos = { path = "crates/isdown-macos" }
+owlgood-core = { path = "crates/owlgood-core" }
+owlgood-monitor = { path = "crates/owlgood-monitor" }
+owlgood-macos = { path = "crates/owlgood-macos" }
 
 [workspace]
 members = ["crates/*"]
