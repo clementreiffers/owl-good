@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none">
+  <title>OwlGood</title>
+  <desc>Une chouette ivoire aux grands yeux sur une icône macOS indigo.</desc>
+  <defs>
+    <linearGradient id="tile" x1="200" y1="90" x2="800" y2="940" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#9685F5"/><stop offset=".48" stop-color="#6352C9"/><stop offset="1" stop-color="#302A75"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="512" y1="80" x2="512" y2="944" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF" stop-opacity=".65"/><stop offset=".5" stop-color="#FFFFFF" stop-opacity=".08"/><stop offset="1" stop-color="#FFFFFF" stop-opacity=".2"/>
+    </linearGradient>
+    <linearGradient id="feathers" x1="512" y1="270" x2="512" y2="790" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFEF8"/><stop offset="1" stop-color="#DCD6F0"/>
+    </linearGradient>
+    <linearGradient id="beak" x1="512" y1="536" x2="512" y2="620" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFD780"/><stop offset="1" stop-color="#E99C43"/>
+    </linearGradient>
+  </defs>
+  <!-- Transparent margins keep the silhouette aligned with native macOS icons. -->
+  <rect x="80" y="96" width="864" height="864" rx="196" fill="#17133D" opacity=".08"/>
+  <rect x="80" y="89" width="864" height="864" rx="196" fill="#17133D" opacity=".12"/>
+  <rect x="80" y="80" width="864" height="864" rx="196" fill="url(#tile)"/>
+  <rect x="84" y="84" width="856" height="856" rx="192" stroke="url(#rim)" stroke-width="8"/>
+  <!-- A soft inset halo adds depth without filters or raster effects. -->
+  <circle cx="512" cy="452" r="318" fill="#C8BDFF" opacity=".07"/>
+  <circle cx="512" cy="452" r="265" fill="#DAD2FF" opacity=".06"/>
+  <path d="M258 288 389 350Q512 306 635 350L766 288 744 582C732 735 642 818 512 818S292 735 280 582Z" fill="#211B59" opacity=".25"/>
+  <path d="M258 264 389 326Q512 282 635 326L766 264 744 558C732 711 642 794 512 794S292 711 280 558Z" fill="url(#feathers)"/>
+  <path d="M278 304 372 346 291 420Z" fill="#C4B9E7"/>
+  <path d="M746 304 652 346 733 420Z" fill="#C4B9E7"/>
+  <path d="M293 591Q318 715 428 747Q357 651 366 589Z" fill="#B4A7DA" opacity=".65"/>
+  <path d="M731 591Q706 715 596 747Q667 651 658 589Z" fill="#B4A7DA" opacity=".65"/>
+  <path d="M512 431C448 347 321 367 311 470 301 574 425 624 512 556 599 624 723 574 713 470 703 367 576 347 512 431Z" fill="#FFFFFF"/>
+  <circle cx="408" cy="479" r="77" fill="#E7E1F5"/>
+  <circle cx="616" cy="479" r="77" fill="#E7E1F5"/>
+  <circle cx="414" cy="480" r="53" fill="#302A60"/>
+  <circle cx="610" cy="480" r="53" fill="#302A60"/>
+  <circle cx="428" cy="461" r="17" fill="#FFFFFF"/>
+  <circle cx="624" cy="461" r="17" fill="#FFFFFF"/>
+  <circle cx="400" cy="500" r="7" fill="#9B8BCF"/>
+  <circle cx="596" cy="500" r="7" fill="#9B8BCF"/>
+  <path d="M484 558Q512 543 540 558L519 601Q512 614 505 601Z" fill="url(#beak)"/>
+  <path d="m452 659 13 14 13-14m21 25 13 14 13-14m21-25 13 14 13-14" stroke="#A69AC8" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

@@ -1,5 +1,7 @@
 # OwlGood
 
+<img src="resources/owlgood-app.svg" alt="Icône OwlGood : chouette ivoire sur fond indigo" width="160" height="160">
+
 **Vos services à l’œil.** Une petite chouette dans votre barre de menus pour suivre vos services et vous prévenir des incidents.
 
 Application macOS native écrite en Rust pour surveiller des pages de statut depuis la barre de menus. Interface AppKit, sans WebView, réseau via libcurl système et règles compilées avec `regex`.
@@ -100,6 +102,8 @@ Chaque site possède trois expressions personnalisables. La priorité est **éch
 Pour un autre fournisseur, choisir le mode `regex` et renseigner une URL et des expressions adaptées au contenu retourné. Le mode `statusio` attend directement une URL JSON Status.io. Ne pas utiliser une recherche trop générale telle que `Operational` sur une page mêlant plusieurs services et leur historique : définir des règles qui identifient le statut courant.
 
 ## Identité visuelle
+
+L’icône de l’application est dessinée dans [resources/owlgood-app.svg](resources/owlgood-app.svg) : une chouette ivoire sur un carré indigo arrondi, avec relief et transparence. Les paramètres embarquent directement ce SVG, y compris avec `cargo run`. Le build le convertit avec AppKit et `iconutil` en `OwlGood.icns`, dans toutes les tailles standard et Retina de 16 à 1024 pixels, puis l’intègre au bundle avant signature. Aucune dépendance graphique supplémentaire n’est nécessaire.
 
 OwlGood associe « owl » (chouette) et « all good ». Sa chouette vectorielle à grands yeux veille sur vos services. L’icône monochrome de la barre de menus suit le contraste macOS ; la pastille séparée indique l’état réel, y compris les incidents. Le dessin réutilisable est dans `resources/owlgood-menubar.svg` ; son équivalent AppKit est dessiné à la résolution de l’écran.
 

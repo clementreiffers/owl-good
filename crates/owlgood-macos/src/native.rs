@@ -1377,8 +1377,13 @@ impl Delegate {
         let sidebar = NSView::initWithFrame(NSView::alloc(self.mtm()), rect(0., 0., 176., 614.));
         let owl =
             NSImageView::initWithFrame(NSImageView::alloc(self.mtm()), rect(16., 548., 38., 38.));
-        owl.setImage(Some(&self.owl_icon()));
-        owl.setContentTintColor(Some(&NSColor::systemPurpleColor()));
+        // Embed the canonical vector asset so cargo run uses the same branding as the bundle.
+        let app_icon = NSImage::initWithData(
+            NSImage::alloc(),
+            &NSData::with_bytes(include_bytes!("../../../resources/owlgood-app.svg")),
+        )
+        .unwrap_or_else(|| self.owl_icon());
+        owl.setImage(Some(&app_icon));
         owl.setAccessibilityLabel(Some(&ns("OwlGood")));
         sidebar.addSubview(&owl);
         let brand = self.label("OwlGood", rect(64., 563., 100., 26.), 18.);

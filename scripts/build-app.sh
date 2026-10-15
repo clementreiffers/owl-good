@@ -9,6 +9,8 @@ if [ "$(uname -s)" != Darwin ]; then
     exit 1
 fi
 
+swift -module-cache-path "$ROOT/target/swift-module-cache" \
+    "$ROOT/scripts/build-icon.swift" "$ROOT/resources/owlgood-app.svg" "$ROOT/target/app-icon"
 bash "$ROOT/scripts/fetch-sparkle.sh"
 export MACOSX_DEPLOYMENT_TARGET=13.0
 if [ "${1:-}" = '--universal' ]; then
@@ -29,6 +31,7 @@ ditto "$ROOT/target/sparkle-sdk/Sparkle.framework" "$APP/Contents/Frameworks/Spa
 cp "$ROOT/target/sparkle-sdk/LICENSE" "$APP/Contents/Resources/Sparkle-LICENSE"
 cp "$BINARY" "$APP/Contents/MacOS/owlgood"
 cp "$ROOT/resources/Info.plist" "$APP/Contents/Info.plist"
+cp "$ROOT/target/app-icon/OwlGood.icns" "$APP/Contents/Resources/OwlGood.icns"
 if [ -n "${OWLGOOD_RELEASE_VERSION:-}" ]; then
     /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $OWLGOOD_RELEASE_VERSION" "$APP/Contents/Info.plist"
     /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $OWLGOOD_RELEASE_VERSION" "$APP/Contents/Info.plist"
