@@ -100,7 +100,7 @@ Les réglages natifs regroupent Services, Apparence et Notifications dans une ba
 
 Le panneau et la navigation utilisent le matériau Liquid Glass natif sur macOS 26 ou ultérieur, avec un repli sur les matériaux AppKit sur macOS 13 à 15. Les matériaux système gèrent les préférences d’accessibilité, sans transparence artificielle ajoutée. Le panneau compact fait 300 px de large par défaut, avec des lignes de 44 px. Le nom, le statut et la date/heure locale du dernier contrôle sont regroupés ; la pastille chevauche le coin inférieur droit de l’icône. Sous les sites, une liste de commandes avec icônes et libellés affiche « Paramètres », Actualiser, Suspendre/Reprendre et Quitter ; les détails restent disponibles au survol. Les commandes occupent des lignes compactes de 22 px. Un site sans observation disponible indique « Pas de résultat » ; l’heure affichée correspond au dernier contrôle terminé, même en cas d’erreur réseau. Les réglages partagent un fond continu avec les boutons de fenêtre natifs.
 
-Les changements du formulaire sont appliqués avec « Enregistrer ». Fermer la fenêtre conserve le brouillon en mémoire ; changer de service, recharger ou quitter demande confirmation si des modifications risquent d’être perdues. L’import JSON et le formulaire se protègent mutuellement contre l’écrasement de modifications non enregistrées. L’enregistrement est validé et atomique. Une configuration invalide n’est pas remplacée silencieusement par les valeurs par défaut.
+Les interrupteurs et menus appliquent et enregistrent les changements immédiatement. Les champs texte sont enregistrés après une courte pause de saisie ou à la fin de l’édition. Une valeur invalide reste signalée sans changer la configuration active ni déplacer le curseur. Les écritures sont validées et atomiques. L’éditeur JSON conserve une validation explicite ; les changements du formulaire préservent son brouillon. Changer de service ou quitter demande confirmation uniquement si des modifications invalides ou un brouillon JSON restent à traiter.
 
 Les options couvrent les services, URL, règles, activation, intervalles, timeout, concurrence, péremption, notifications et apparence. Les couleurs utilisent `#RRGGBB` ; les thèmes sont `system`, `light` et `dark`. Les icônes peuvent être remplacées par un fichier local. Le rendu monochrome s’adapte au thème pour rester lisible. L’icône de la barre des menus est une image template native : macOS ajuste son contraste au fond de la menubar, indépendamment du thème de l’application. Sa pastille colorée est rendue séparément.
 
@@ -109,6 +109,8 @@ Pour employer un autre fichier, notamment lors de tests :
 ```sh
 OWLGOOD_CONFIG_PATH=owlgood-config.json target/release/OwlGood.app/Contents/MacOS/owlgood
 ```
+
+Le bouton « Tester les notifications » des paramètres envoie une notification réelle, sans modifier les états des services. Il fonctionne même si les alertes automatiques sont désactivées et utilise le réglage Son du formulaire. Il demande l’autorisation macOS si nécessaire et affiche le résultat de l’envoi ; l’absence de bannière peut dépendre des réglages macOS ou du mode Concentration.
 
 Les notifications nécessitent l’autorisation macOS, demandée explicitement depuis les paramètres. Leur politique comporte confirmation, délai anti-répétition, avertissements et rétablissements configurables. Le refus de permission ne bloque pas la surveillance. Pour tester la livraison réelle, lancer le bundle `.app` ; le simple lancement du binaire par Cargo ne garantit pas une identité de notification valide.
 

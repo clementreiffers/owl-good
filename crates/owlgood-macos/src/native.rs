@@ -64,6 +64,10 @@ struct State {
     notifications: HashMap<String, NotificationState>,
     started: Instant,
     smoke: bool,
+    notification_test_feedback: (
+        std::sync::mpsc::Sender<String>,
+        std::sync::mpsc::Receiver<String>,
+    ),
     clicks: std::sync::mpsc::Receiver<String>,
     icons: crate::icons::Icons,
 }
@@ -107,6 +111,7 @@ struct Options {
     theme: Retained<NSPopUpButton>,
     preview: Retained<NSView>,
     preview_icon: Retained<NSImageView>,
+    test_notification: Retained<NSButton>,
 }
 struct Ivars {
     state: RefCell<State>,
@@ -115,6 +120,7 @@ struct Ivars {
     controller: OnceCell<Retained<NSViewController>>,
     settings: OnceCell<Settings>,
     timer: OnceCell<Retained<NSTimer>>,
+    pending_save: Cell<Option<Instant>>,
     options: OnceCell<Options>,
     notification_delegate: OnceCell<Retained<NotificationDelegate>>,
     icon_cache: RefCell<HashMap<String, Retained<NSImage>>>,
@@ -153,10 +159,10 @@ define_class!(
             if let Some(o) = self.ivars().options.get() { self.show_advanced(1, o.advanced.isHidden()); }
         }
         #[unsafe(method(preview:))]
-        fn preview_action(&self, _: Option<&AnyObject>) { self.update_preview(); }
+        fn preview_action(&self, _: Option<&AnyObject>) { self.update_preview(); self.save_form(); }
         #[unsafe(method(notificationOptions:))]
         fn notification_options(&self, _: Option<&AnyObject>) {
-            if let Some(o) = self.ivars().options.get() { o.notification_details.setHidden(o.checks[3].control.state() == 0); } self.update_preview();
+            if let Some(o) = self.ivars().options.get() { o.notification_details.setHidden(o.checks[3].control.state() == 0); } self.update_preview(); self.save_form();
         }
         #[unsafe(method(editJson:))]
         fn edit_json(&self, _: Option<&AnyObject>) {
@@ -172,7 +178,7 @@ define_class!(
             if let Some(s) = self.ivars().settings.get() {
                 let rules = owlgood_core::Rules::default();
                 s.fail.setStringValue(&ns(&rules.fail)); s.warning.setStringValue(&ns(&rules.warning)); s.success.setStringValue(&ns(&rules.success));
-                s.message.setStringValue(&ns("Règles GitLab restaurées dans le formulaire. Enregistrez pour appliquer."));
+                self.save_form();
             }
         }
         #[unsafe(method(togglePanel:))]
@@ -207,6 +213,10 @@ define_class!(
             if let Some(s) = self.ivars().settings.get() && !self.confirm_discard() { s.site.selectItemAtIndex(s.selected.get()); return; }
             self.reload_settings(); self.load_options(); self.remember_draft();
         }
+        #[unsafe(method(settingsTextChanged:))]
+        fn settings_text_changed(&self, _: &NSNotification) {
+            self.ivars().pending_save.set(Some(Instant::now()));
+        }
         #[unsafe(method(saveSite:))]
         fn save_site(&self, _: Option<&AnyObject>) { self.save_form(); }
         #[unsafe(method(addServiceFromPanel:))]
@@ -221,6 +231,8 @@ define_class!(
         fn reset_json(&self, _: Option<&AnyObject>) { if self.confirm_discard() { self.reload_settings(); self.load_options(); self.remember_draft(); } }
         #[unsafe(method(testRules:))]
         fn test_rules(&self, _: Option<&AnyObject>) { self.test_regex(); }
+        #[unsafe(method(testNotification:))]
+        fn test_notification_action(&self, _: Option<&AnyObject>) { self.test_notification(); }
         #[unsafe(method(allowNotifications:))]
         fn allow_notifications(&self, _: Option<&AnyObject>) { self.request_notifications(); }
     }
@@ -246,6 +258,7 @@ pub fn run(config: Config, path: PathBuf) -> Result<(), String> {
             notifications: HashMap::new(),
             started: Instant::now(),
             clicks,
+            notification_test_feedback: std::sync::mpsc::channel(),
             icons: crate::icons::start(),
             smoke: std::env::var_os("OWLGOOD_SMOKE_TEST").is_some(),
         }),
@@ -254,6 +267,7 @@ pub fn run(config: Config, path: PathBuf) -> Result<(), String> {
         controller: OnceCell::new(),
         settings: OnceCell::new(),
         timer: OnceCell::new(),
+        pending_save: Cell::new(None),
         options: OnceCell::new(),
         notification_delegate: OnceCell::new(),
         icon_cache: RefCell::new(HashMap::new()),
@@ -322,6 +336,9 @@ impl Delegate {
                 self.select_section(0);
                 eprintln!("OwlGood: smoke verified all settings navigation selections");
             }
+            if std::env::var_os("OWLGOOD_SMOKE_AUTOSAVE").is_some() {
+                self.smoke_autosave();
+            }
             if std::env::var_os("OWLGOOD_SMOKE_OPTIONS").is_some() {
                 self.open_options();
             }
@@ -329,7 +346,79 @@ impl Delegate {
         }
     }
 
+    fn smoke_autosave(&self) {
+        let settings = self.ivars().settings.get().expect("settings");
+        let options = self.ivars().options.get().expect("options");
+        let original = self.ivars().state.borrow().config.clone();
+        settings.interval.setStringValue(&ns("60"));
+        // SAFETY: These notifications match the registered NSTextField observers.
+        unsafe {
+            NSNotificationCenter::defaultCenter().postNotificationName_object(
+                NSControlTextDidChangeNotification,
+                Some(&settings.interval),
+            );
+        }
+        assert!(self.ivars().pending_save.get().is_some());
+        // Advance the debounce clock without blocking the AppKit event loop.
+        self.ivars()
+            .pending_save
+            .set(Some(Instant::now() - std::time::Duration::from_secs(1)));
+        self.tick();
+        assert_eq!(self.ivars().state.borrow().config.interval_secs, 60);
+        let path = self.ivars().state.borrow().path.clone();
+        assert_eq!(
+            owlgood_core::load_config(&path)
+                .expect("saved settings")
+                .interval_secs,
+            60
+        );
+        settings.interval.setStringValue(&ns("1"));
+        self.save_form();
+        assert_eq!(self.ivars().state.borrow().config.interval_secs, 60);
+        settings.interval.setStringValue(&ns("60"));
+        settings.json.setString(&ns("unfinished JSON"));
+        let sound = options.checks[6].control.state() == 0;
+        // SAFETY: The switch targets this live delegate's notificationOptions: action.
+        unsafe { options.checks[6].control.performClick(None) };
+        assert_eq!(
+            self.ivars().state.borrow().config.notifications.sound,
+            sound
+        );
+        assert_eq!(settings.json.string().to_string(), "unfinished JSON");
+        self.apply(original).expect("restore smoke settings");
+        self.reload_settings();
+        self.load_options();
+        self.remember_draft();
+        eprintln!(
+            "OwlGood: smoke verified automatic settings, validation and JSON draft preservation"
+        );
+    }
+
     fn tick(&self) {
+        if self
+            .ivars()
+            .pending_save
+            .get()
+            .is_some_and(|time| time.elapsed().as_millis() >= 600)
+        {
+            self.save_form();
+        }
+        // Notification callbacks send plain text; AppKit is updated only here on the main thread.
+        for message in self
+            .ivars()
+            .state
+            .borrow()
+            .notification_test_feedback
+            .1
+            .try_iter()
+        {
+            if let Some(settings) = self.ivars().settings.get() {
+                settings.message.setStringValue(&ns(&message));
+            }
+            if let Some(options) = self.ivars().options.get() {
+                options.test_notification.setEnabled(true);
+            }
+        }
         let mut messages = Vec::new();
         while let Ok((key, bytes)) = self.ivars().state.borrow().icons.results.try_recv() {
             if let Some(image) =
@@ -529,6 +618,23 @@ impl Delegate {
         let field = NSTextField::initWithFrame(NSTextField::alloc(self.mtm()), frame);
         field.setStringValue(&ns(value));
         field.setBezelStyle(NSTextFieldBezelStyle::RoundedBezel);
+        // SAFETY: The delegate outlives all fields and these selectors run on the main thread.
+        unsafe {
+            field.setTarget(Some(self));
+            field.setAction(Some(sel!(saveSite:)));
+            NSNotificationCenter::defaultCenter().addObserver_selector_name_object(
+                self,
+                sel!(settingsTextChanged:),
+                Some(NSControlTextDidChangeNotification),
+                Some(&field),
+            );
+            NSNotificationCenter::defaultCenter().addObserver_selector_name_object(
+                self,
+                sel!(saveSite:),
+                Some(NSControlTextDidEndEditingNotification),
+                Some(&field),
+            );
+        }
         field
     }
     /// Use Apple's glass renderer when present (macOS 26+), without linking a
@@ -1369,6 +1475,11 @@ impl Delegate {
             rect(130., 224., 200., 26.),
             false,
         );
+        // SAFETY: The delegate owns this control and implements its main-thread action.
+        unsafe {
+            adapter.setTarget(Some(self));
+            adapter.setAction(Some(sel!(saveSite:)));
+        }
         for value in ["gitlab", "statusio", "regex"] {
             adapter.addItemWithTitle(&ns(value));
         }
@@ -1406,8 +1517,8 @@ impl Delegate {
         let interval = self.field("30", rect(450., 414., 100., 26.));
         self.build_options(&appearance, &notifications, &interval);
         let message = self.label(
-            "Les modifications restent en brouillon jusqu’à l’enregistrement.",
-            rect(224., 13., 500., 45.),
+            "Les modifications sont appliquées et enregistrées automatiquement.",
+            rect(224., 13., 640., 45.),
             11.,
         );
         message.setTextColor(Some(&NSColor::secondaryLabelColor()));
@@ -1416,10 +1527,6 @@ impl Delegate {
         }
         message.setMaximumNumberOfLines(2);
         root.addSubview(&message);
-        let save = self.button("Enregistrer", rect(736., 24., 128., 32.), sel!(saveSite:));
-        save.setKeyEquivalent(&ns("\r"));
-        save.setBezelColor(Some(&NSColor::controlAccentColor()));
-        root.addSubview(&save);
         window.setContentView(Some(&root));
         let json_window = self.window("Configuration avancée — OwlGood", 700., 520.);
         let json_root = NSView::initWithFrame(NSView::alloc(self.mtm()), rect(0., 0., 700., 520.));
@@ -1625,13 +1732,14 @@ impl Delegate {
         let Some(s) = self.ivars().settings.get() else {
             return true;
         };
+        self.save_form();
         if *s.baseline.borrow() == self.draft() {
             return true;
         }
         let alert = NSAlert::new(self.mtm());
         alert.setMessageText(&ns("Des modifications ne sont pas enregistrées"));
         alert.setInformativeText(&ns(
-            "Revenez au formulaire pour les enregistrer, ou abandonnez le brouillon.",
+            "Corrigez les valeurs invalides ou validez le JSON, ou abandonnez ces modifications.",
         ));
         alert.addButtonWithTitle(&ns("Continuer à modifier"));
         alert.addButtonWithTitle(&ns("Abandonner les modifications"));
@@ -1680,10 +1788,8 @@ impl Delegate {
         let Some(s) = self.ivars().settings.get() else {
             return;
         };
-        self.select_section(tab);
-        if advanced {
-            self.show_advanced(tab, true);
-        }
+        // Validation during typing must not move focus or switch pages.
+        let _ = (tab, advanced);
         s.inline_error.removeFromSuperview();
         let frame = field.frame();
         s.inline_error.setFrame(rect(
@@ -1701,8 +1807,6 @@ impl Delegate {
             parent.addSubview(&s.inline_error);
         }
         field.setToolTip(Some(&ns(message)));
-        field.scrollRectToVisible(field.bounds());
-        s.window.makeFirstResponder(Some(field));
         self.result_message(Err(message.into()));
     }
     fn validate_form_fields(&self) -> bool {
@@ -1816,12 +1920,20 @@ impl Delegate {
         true
     }
     fn save_form(&self) {
-        if !self.validate_form_fields() {
+        self.ivars().pending_save.set(None);
+        let Some(s) = self.ivars().settings.get() else {
             return;
-        }
-        if let Some(s) = self.ivars().settings.get() {
-            let json_changed = s.baseline.borrow().get(8) != self.draft().get(8);
-            if json_changed && !self.confirm_replace("Le brouillon JSON sera remplacé", "L’enregistrement du formulaire remplacera les modifications faites dans l’éditeur JSON.") { return; }
+        };
+        let draft = self.draft();
+        let changed = s
+            .baseline
+            .borrow()
+            .iter()
+            .zip(&draft)
+            .enumerate()
+            .any(|(i, (a, b))| i != 8 && a != b);
+        if !changed || !self.validate_form_fields() {
+            return;
         }
         let Some(settings) = self.ivars().settings.get() else {
             return;
@@ -1832,7 +1944,7 @@ impl Delegate {
             return;
         };
         config.interval_secs = interval;
-        if let Ok(index) = usize::try_from(settings.site.indexOfSelectedItem())
+        if let Ok(index) = usize::try_from(settings.selected.get())
             && let Some(site) = config.sites.get_mut(index)
         {
             site.name = settings.name.stringValue().to_string();
@@ -1852,9 +1964,27 @@ impl Delegate {
         }
         let result = self.apply(config);
         if result.is_ok() {
-            self.reload_settings();
-            self.load_options();
-            self.remember_draft();
+            // Keep the field editor/caret intact and preserve a separate JSON draft.
+            let old_json = settings.baseline.borrow().get(8).cloned();
+            let json_dirty = old_json.as_ref() != draft.get(8);
+            let mut baseline = self.draft();
+            if json_dirty {
+                if let Some(json) = old_json {
+                    baseline[8] = json;
+                }
+            } else if let Ok(json) =
+                serde_json::to_string_pretty(&self.ivars().state.borrow().config)
+            {
+                settings.json.setString(&ns(&json));
+                baseline[8] = json;
+            }
+            *settings.baseline.borrow_mut() = baseline;
+            if settings.selected.get() >= 0
+                && let Some(item) = settings.site.itemAtIndex(settings.selected.get())
+            {
+                item.setTitle(&settings.name.stringValue());
+            }
+            settings.inline_error.removeFromSuperview();
         }
         self.result_message(result);
     }
@@ -2137,6 +2267,20 @@ impl Delegate {
             rect(20., 70., 580., 30.),
             12.,
         ));
+        let test_notification = self.button(
+            "Tester les notifications",
+            rect(20., 28., 220., 30.),
+            sel!(testNotification:),
+        );
+        test_notification.setToolTip(Some(&ns("Envoie un test, même si les alertes automatiques sont désactivées. Utilise le réglage Son du formulaire.")));
+        notifications.addSubview(&test_notification);
+        let hint = self.label(
+            "Un aperçu réel des notifications macOS.",
+            rect(252., 31., 360., 24.),
+            11.,
+        );
+        hint.setTextColor(Some(&NSColor::secondaryLabelColor()));
+        notifications.addSubview(&hint);
         let _ = self.ivars().options.set(Options {
             advanced,
             disclosure,
@@ -2146,6 +2290,7 @@ impl Delegate {
             theme,
             preview,
             preview_icon,
+            test_notification,
         });
     }
     fn load_options(&self) {
@@ -2270,6 +2415,77 @@ impl Delegate {
         alert.setMessageText(&ns(title));
         alert.setInformativeText(&ns(text));
         alert.runModal();
+    }
+    fn test_notification(&self) {
+        if self.ivars().state.borrow().smoke {
+            return;
+        }
+        if NSBundle::mainBundle().bundleIdentifier().is_none() {
+            self.alert(
+                "Notifications",
+                "Lancez OwlGood.app pour tester les notifications natives.",
+            );
+            return;
+        }
+        let Some(options) = self.ivars().options.get() else {
+            return;
+        };
+        if !options.test_notification.isEnabled() {
+            return;
+        }
+        options.test_notification.setEnabled(false);
+        if let Some(settings) = self.ivars().settings.get() {
+            settings.message.setStringValue(&ns(
+                "Préparation du test… Autorisez les notifications si macOS vous le demande.",
+            ));
+        }
+        let sound = options.checks[6].control.state() != 0;
+        let feedback = self
+            .ivars()
+            .state
+            .borrow()
+            .notification_test_feedback
+            .0
+            .clone();
+        let authorization = RcBlock::new(move |allowed: Bool, error: *mut NSError| {
+            if !error.is_null() {
+                let _ = feedback.send(
+                    "Impossible de vérifier l’autorisation des notifications. Réessayez.".into(),
+                );
+                return;
+            }
+            if !allowed.as_bool() {
+                let _ = feedback.send("Notifications refusées. Activez OwlGood dans Réglages Système → Notifications, puis réessayez.".into());
+                return;
+            }
+            let content = UNMutableNotificationContent::new();
+            content.setTitle(&ns("OwlGood — Notification de test"));
+            content.setBody(&ns("Bien reçu ? Votre chouette est prête à vous prévenir. Ceci est un test, aucun service n’est en panne."));
+            if sound {
+                content.setSound(Some(&UNNotificationSound::defaultSound()));
+            }
+            let request = UNNotificationRequest::requestWithIdentifier_content_trigger(
+                &ns("owlgood.test-notification"),
+                &content,
+                None,
+            );
+            let delivery_feedback = feedback.clone();
+            let completion = RcBlock::new(move |error: *mut NSError| {
+                let message = if error.is_null() {
+                    "Test transmis à macOS. Rien à l’écran ? Vérifiez les bannières OwlGood et le mode Concentration."
+                } else {
+                    "macOS n’a pas accepté la notification de test. Vérifiez les autorisations puis réessayez."
+                };
+                let _ = delivery_feedback.send(message.into());
+            });
+            UNUserNotificationCenter::currentNotificationCenter()
+                .addNotificationRequest_withCompletionHandler(&request, Some(&completion));
+        });
+        UNUserNotificationCenter::currentNotificationCenter()
+            .requestAuthorizationWithOptions_completionHandler(
+                UNAuthorizationOptions::Alert | UNAuthorizationOptions::Sound,
+                &authorization,
+            );
     }
     fn request_notifications(&self) {
         if NSBundle::mainBundle().bundleIdentifier().is_none() {

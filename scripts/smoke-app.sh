@@ -9,5 +9,5 @@ if [ ! -x "$APP/Contents/MacOS/owlgood" ]; then
 fi
 SMOKE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/owlgood-smoke.XXXXXX")
 trap 'rm -rf "$SMOKE_DIR"' EXIT HUP INT TERM
-OWLGOOD_CONFIG_PATH="$SMOKE_DIR/config.json" OWLGOOD_SMOKE_TEST=1 \
+OWLGOOD_CONFIG_PATH="$SMOKE_DIR/config.json" OWLGOOD_SMOKE_TEST=1 OWLGOOD_SMOKE_AUTOSAVE=1 \
     "$APP/Contents/MacOS/owlgood"
