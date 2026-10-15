@@ -116,6 +116,7 @@ struct Options {
 struct Ivars {
     state: RefCell<State>,
     status_item: OnceCell<Retained<NSStatusItem>>,
+    status_badge: OnceCell<Retained<NSImageView>>,
     popover: OnceCell<Retained<NSPopover>>,
     controller: OnceCell<Retained<NSViewController>>,
     settings: OnceCell<Settings>,
@@ -274,6 +275,7 @@ pub fn run(config: Config, path: PathBuf) -> Result<(), String> {
             smoke: std::env::var_os("OWLGOOD_SMOKE_TEST").is_some(),
         }),
         status_item: OnceCell::new(),
+        status_badge: OnceCell::new(),
         popover: OnceCell::new(),
         controller: OnceCell::new(),
         settings: OnceCell::new(),
@@ -919,21 +921,17 @@ impl Delegate {
             )
         }
     }
-    fn menu_title(&self, status: Status) -> Retained<NSAttributedString> {
+    fn menu_title(&self) -> Retained<NSAttributedString> {
         let state = self.ivars().state.borrow();
         let a = &state.config.appearance;
         let title =
             NSMutableAttributedString::initWithString(NSMutableAttributedString::alloc(), &ns(""));
-        if a.show_badge {
-            title.appendAttributedString(&self.attributed_text(
-                "●",
-                &self.color(status),
-                a.badge_size * 1.4,
-            ));
-        }
         if a.show_menu_title {
-            let text = format!("{}{}", if a.show_badge { " " } else { "" }, a.menu_title);
-            title.appendAttributedString(&self.attributed_text(&text, &NSColor::labelColor(), 13.));
+            title.appendAttributedString(&self.attributed_text(
+                &a.menu_title,
+                &NSColor::labelColor(),
+                13.,
+            ));
         }
         Retained::into_super(title)
     }
@@ -1088,12 +1086,47 @@ impl Delegate {
             .and_then(|item| item.button(self.mtm()))
         {
             button.setImage(self.menu_icon().as_deref());
-            button.setAttributedTitle(&self.menu_title(overall));
-            button.setImagePosition(if a.badge_position == "left" {
-                NSCellImagePosition::ImageTrailing
-            } else {
-                NSCellImagePosition::ImageLeading
+            button.setAttributedTitle(&self.menu_title());
+            button.setImagePosition(NSCellImagePosition::ImageLeading);
+            let badge = self.ivars().status_badge.get_or_init(|| {
+                let view = NSImageView::initWithFrame(NSImageView::alloc(self.mtm()), NSRect::ZERO);
+                // Disabled image views dim their image, including the status color.
+                view.setEnabled(true);
+                button.addSubview(&view);
+                view
             });
+            badge.setHidden(!a.show_badge);
+            if a.show_badge {
+                button.layoutSubtreeIfNeeded();
+                if let Some(cell) = button.cell() {
+                    let icon = cell.imageRectForBounds(button.bounds());
+                    // Keep existing size preferences, scaled down for an overlapping badge.
+                    let size = (a.badge_size * 8. / 9.).min(a.menu_icon_size * 0.5);
+                    let x = if a.badge_position == "left" {
+                        icon.origin.x - size * 0.15
+                    } else {
+                        icon.origin.x + icon.size.width - size * 0.85
+                    };
+                    let y = if button.isFlipped() {
+                        icon.origin.y + icon.size.height - size * 0.85
+                    } else {
+                        icon.origin.y - size * 0.15
+                    };
+                    badge.setFrame(rect(x, y, size, size));
+                    let color = self.color(overall);
+                    let draw = RcBlock::new(move |_: NSRect| {
+                        color.setFill();
+                        NSBezierPath::bezierPathWithOvalInRect(rect(0., 0., size, size)).fill();
+                        Bool::YES
+                    });
+                    let image = NSImage::imageWithSize_flipped_drawingHandler(
+                        NSSize::new(size, size),
+                        false,
+                        &draw,
+                    );
+                    badge.setImage(Some(&image));
+                }
+            }
             button.setToolTip(Some(&ns(&format!(
                 "OwlGood — {}",
                 if config.paused {
