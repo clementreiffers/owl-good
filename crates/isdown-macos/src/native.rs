@@ -49,8 +49,10 @@ define_class!(
             completion.call(());
         }
         #[unsafe(method(userNotificationCenter:willPresentNotification:withCompletionHandler:))]
-        fn present(&self, _: &UNUserNotificationCenter, _: &UNNotification, completion: &block2::DynBlock<dyn Fn(UNNotificationPresentationOptions)>) {
-            completion.call((UNNotificationPresentationOptions::Banner | UNNotificationPresentationOptions::Sound,));
+        fn present(&self, _: &UNUserNotificationCenter, notification: &UNNotification, completion: &block2::DynBlock<dyn Fn(UNNotificationPresentationOptions)>) {
+            let mut options=UNNotificationPresentationOptions::Banner;
+            if notification.request().content().sound().is_some() {options |= UNNotificationPresentationOptions::Sound;}
+            completion.call((options,));
         }
     }
 );
@@ -255,12 +257,6 @@ impl Delegate {
         timer.setTolerance(0.2);
         let _ = self.ivars().timer.set(timer);
         eprintln!("isDown: native status item ready");
-        if !self.ivars().state.borrow().smoke
-            && NSBundle::mainBundle().bundleIdentifier().is_some()
-            && self.ivars().state.borrow().config.notifications.enabled
-        {
-            self.request_notifications();
-        }
         if self.ivars().state.borrow().smoke {
             self.toggle();
             self.open_settings();
