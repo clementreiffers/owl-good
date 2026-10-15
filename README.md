@@ -28,6 +28,29 @@ L’application est un accessoire de barre de menus, sans icône permanente dans
 
 Ce contrôle ouvre les composants natifs avec une configuration temporaire et ferme automatiquement l’application. Il ne demande pas l’autorisation des notifications et ne modifie pas les préférences habituelles.
 
+## CI et releases
+
+La CI GitHub Actions vérifie les tests de versionnement, le formatage Rust, Clippy et les tests du workspace sur macOS à chaque pull request et push sur `main`. Après validation d’un push sur `main`, semantic-release calcule la prochaine version à partir des Conventional Commits :
+
+- `fix:` produit une version patch ; `feat:` une version mineure.
+- `!` ou un paragraphe `BREAKING CHANGE:` produit une version majeure.
+- `docs:`, `chore:` et les autres commits sans changement publiable ne déclenchent pas de release.
+
+Comme dans `litellm-ember`, les tags sont au format `1.2.3`, sans préfixe `v`, et la première release est `1.0.0`. Les notes sont générées automatiquement. La version calculée est injectée dans les deux champs de version du bundle macOS ; les manifestes Cargo gardent leur version de développement, sans commit automatique de versionnement.
+
+Chaque GitHub Release contient un DMG, une archive `isDown-VERSION-macos-universal.app.tar.gz` et `SHA256SUMS.txt`. Le binaire est compilé en profil release pour Apple Silicon et Intel, puis assemblé avec `lipo`. Le packaging vérifie les architectures, la version du bundle, la signature ad hoc et l’intégrité du DMG. L’application reste non notarialisée, comme le build local.
+
+Le workflow utilise uniquement le secret automatique `GITHUB_TOKEN` avec `contents: write` pour publier. Aucun secret Tauri n’est nécessaire pour cette application AppKit. Le dépôt GitHub doit avoir Actions activé et autoriser la création de tags et de releases par ce token.
+
+Pour vérifier le packaging localement sans publier :
+
+```sh
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
+bash scripts/prepare-release.sh 1.0.0
+```
+
+Les fichiers sont déposés dans `release/`. Pour vérifier les règles de versionnement : `npm ci && npm test` (Node.js 24.10 ou ultérieur).
+
 ## Surveillance
 
 GitLab est proposé par défaut avec un rafraîchissement de **30 secondes**. Il peut être modifié, désactivé ou supprimé ; une liste vide reste vide au redémarrage.
