@@ -420,23 +420,72 @@ impl Delegate {
         NSColor::colorWithSRGBRed_green_blue_alpha(r, g, b, 1.)
     }
     fn badge(&self, status: Status) -> Retained<NSImage> {
-        let image = NSImage::initWithSize(NSImage::alloc(), NSSize::new(28., 18.));
-        // Drawing is synchronous, exclusively on the AppKit main thread.
+        let state = self.ivars().state.borrow();
+        let a = &state.config.appearance;
+        let size = a.menu_icon_size;
+        let dot = if a.show_badge { a.badge_size + 3. } else { 0. };
+        let height = size.max(a.badge_size);
+        let image = NSImage::initWithSize(NSImage::alloc(), NSSize::new(size + dot, height));
+        let key = format!(
+            "tray:{}:{}",
+            a.menu_symbol,
+            a.menu_icon_path.as_deref().unwrap_or("")
+        );
+        let cached = self.ivars().icon_cache.borrow().get(&key).cloned();
+        let symbol = cached
+            .or_else(|| {
+                a.menu_icon_path
+                    .as_ref()
+                    .and_then(|p| NSImage::initWithContentsOfFile(NSImage::alloc(), &ns(p)))
+            })
+            .or_else(|| {
+                NSImage::imageWithSystemSymbolName_accessibilityDescription(
+                    &ns(&a.menu_symbol),
+                    Some(&ns("isDown")),
+                )
+            })
+            .or_else(|| {
+                NSImage::imageWithSystemSymbolName_accessibilityDescription(
+                    &ns("network"),
+                    Some(&ns("isDown")),
+                )
+            });
+        // Synchronous Cocoa drawing is confined to the main thread.
         #[allow(deprecated)]
-        {
-            image.lockFocus();
+        image.lockFocus();
+        let left = a.badge_position == "left";
+        if let Some(symbol) = symbol {
+            symbol.setTemplate(true);
+            symbol.drawInRect(rect(
+                if left { dot } else { 0. },
+                (height - size) / 2.,
+                size,
+                size,
+            ));
+            NSColor::labelColor().setFill();
+            NSRectFillUsingOperation(
+                rect(
+                    if left { dot } else { 0. },
+                    (height - size) / 2.,
+                    size,
+                    size,
+                ),
+                NSCompositingOperation::SourceIn,
+            );
+            self.ivars().icon_cache.borrow_mut().insert(key, symbol);
         }
-        NSColor::labelColor().setFill();
-        let ring = NSBezierPath::bezierPathWithOvalInRect(rect(1., 2., 14., 14.));
-        ring.setLineWidth(1.5);
-        NSColor::labelColor().setStroke();
-        ring.stroke();
-        self.color(status).setFill();
-        NSBezierPath::bezierPathWithOvalInRect(rect(17., 5., 9., 9.)).fill();
+        if a.show_badge {
+            self.color(status).setFill();
+            NSBezierPath::bezierPathWithOvalInRect(rect(
+                if left { 0. } else { size + 3. },
+                (height - a.badge_size) / 2.,
+                a.badge_size,
+                a.badge_size,
+            ))
+            .fill();
+        }
         #[allow(deprecated)]
-        {
-            image.unlockFocus();
-        }
+        image.unlockFocus();
         image
     }
     fn site_icon(&self, site: &Site, size: f64, monochrome: bool) -> Option<Retained<NSImage>> {
@@ -541,8 +590,13 @@ impl Delegate {
                     .is_some_and(|o| now().saturating_sub(o.checked_at) > config.stale_after_secs)
             })
             .collect();
+        let system_appearance = NSApplication::sharedApplication(self.mtm())
+            .effectiveAppearance()
+            .name()
+            .to_string();
         let signature = format!(
-            "{:?}:{:?}:{:?}:{}",
+            "{}:{:?}:{:?}:{:?}:{}",
+            system_appearance,
             overall,
             freshness,
             state.latest,
@@ -1091,7 +1145,7 @@ impl Delegate {
             let window = unsafe {
                 NSWindow::initWithContentRect_styleMask_backing_defer(
                     NSWindow::alloc(self.mtm()),
-                    rect(0., 0., 640., 680.),
+                    rect(0., 0., 980., 680.),
                     NSWindowStyleMask::Titled | NSWindowStyleMask::Closable,
                     NSBackingStoreType::Buffered,
                     false,
@@ -1103,7 +1157,7 @@ impl Delegate {
             }
             window.setTitle(&ns("Apparence et notifications"));
             window.center();
-            let root = NSView::initWithFrame(NSView::alloc(self.mtm()), rect(0., 0., 640., 680.));
+            let root = NSView::initWithFrame(NSView::alloc(self.mtm()), rect(0., 0., 980., 680.));
             let theme = NSPopUpButton::initWithFrame_pullsDown(
                 NSPopUpButton::alloc(self.mtm()),
                 rect(250., 635., 250., 26.),
@@ -1135,6 +1189,27 @@ impl Delegate {
                 root.addSubview(&f);
                 fields.push(f);
             }
+            root.addSubview(&self.label(
+                "Icône de la barre des menus",
+                rect(640., 635., 320., 28.),
+                16.,
+            ));
+            for (i, title) in [
+                "Symbole SF Symbols",
+                "Fichier icône (facultatif)",
+                "Taille de l’icône",
+                "Taille de la pastille",
+                "Position (left / right)",
+            ]
+            .iter()
+            .enumerate()
+            {
+                let y = 595. - i as f64 * 65.;
+                root.addSubview(&self.label(title, rect(640., y, 310., 23.), 12.));
+                let field = self.field("", rect(640., y - 27., 310., 26.));
+                root.addSubview(&field);
+                fields.push(field);
+            }
             let mut checks = Vec::new();
             for (i, title) in [
                 "Afficher le titre",
@@ -1144,6 +1219,7 @@ impl Delegate {
                 "Avertissements",
                 "Rétablissements",
                 "Son",
+                "Afficher la pastille",
             ]
             .iter()
             .enumerate()
@@ -1191,6 +1267,11 @@ impl Delegate {
             a.unknown_color.clone(),
             n.confirmation_count.to_string(),
             n.cooldown_secs.to_string(),
+            a.menu_symbol.clone(),
+            a.menu_icon_path.clone().unwrap_or_default(),
+            a.menu_icon_size.to_string(),
+            a.badge_size.to_string(),
+            a.badge_position.clone(),
         ]) {
             field.setStringValue(&ns(&value));
         }
@@ -1202,6 +1283,7 @@ impl Delegate {
             n.on_warning,
             n.on_recovery,
             n.sound,
+            a.show_badge,
         ]) {
             check.setState(if value { 1 } else { 0 });
         }
@@ -1237,6 +1319,12 @@ impl Delegate {
             a.show_menu_title = checked(0);
             a.show_site_icons = checked(1);
             a.monochrome_icons = checked(2);
+            a.menu_symbol = value(11);
+            a.menu_icon_path = (!value(12).trim().is_empty()).then(|| value(12));
+            a.menu_icon_size = number(13)?;
+            a.badge_size = number(14)?;
+            a.badge_position = value(15);
+            a.show_badge = checked(7);
             let n = &mut config.notifications;
             n.enabled = checked(3);
             n.on_warning = checked(4);
