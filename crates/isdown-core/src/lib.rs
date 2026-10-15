@@ -38,6 +38,12 @@ pub struct Site {
 pub struct Appearance {
     pub theme: String,
     pub menu_title: String,
+    pub menu_symbol: String,
+    pub menu_icon_path: Option<String>,
+    pub menu_icon_size: f64,
+    pub badge_size: f64,
+    pub show_badge: bool,
+    pub badge_position: String,
     pub show_menu_title: bool,
     pub show_site_icons: bool,
     pub icon_size: f64,
@@ -121,6 +127,12 @@ impl Default for Appearance {
         Self {
             theme: "system".into(),
             menu_title: "isDown".into(),
+            menu_symbol: "network".into(),
+            menu_icon_path: None,
+            menu_icon_size: 18.,
+            badge_size: 9.,
+            show_badge: true,
+            badge_position: "right".into(),
             show_menu_title: false,
             show_site_icons: true,
             icon_size: 18.,
@@ -235,6 +247,14 @@ pub fn config_path() -> PathBuf {
         .unwrap_or_else(std::env::temp_dir);
     base.join("Library/Application Support/isDown/config.json")
 }
+fn validate_icon_path(path: Option<&str>) -> Result<(), String> {
+    if let Some(path) = path
+        && (path.trim().is_empty() || path.len() > 4096 || path.contains('\0'))
+    {
+        return Err("Icon path must be nonempty, at most 4096 bytes, without NUL".into());
+    }
+    Ok(())
+}
 pub fn validate_config(c: &Config) -> Result<(), String> {
     if c.version != 1 {
         return Err("Unsupported configuration version (expected 1)".into());
@@ -288,14 +308,27 @@ pub fn validate_config(c: &Config) -> Result<(), String> {
         {
             return Err("Site interval must be 5–86400 seconds".into());
         }
+        validate_icon_path(site.icon_path.as_deref())?;
         CompiledRules::new(&site.rules).map_err(|e| format!("{}: {e}", site.name))?;
     }
     let a = &c.appearance;
+    validate_icon_path(a.menu_icon_path.as_deref())?;
+    if !matches!(a.badge_position.as_str(), "left" | "right") {
+        return Err("Badge position must be left or right".into());
+    }
+    if a.menu_symbol.trim().is_empty() || a.menu_symbol.len() > 128 {
+        return Err("Menu symbol requires a nonempty SF Symbol name (max 128 bytes)".into());
+    }
+    if a.menu_title.len() > 128 {
+        return Err("Menu title exceeds 128 bytes".into());
+    }
     if !matches!(a.theme.as_str(), "system" | "light" | "dark") {
         return Err("Theme must be system, light or dark".into());
     }
     for (value, min, max) in [
         (a.icon_size, 12., 64.),
+        (a.menu_icon_size, 12., 32.),
+        (a.badge_size, 4., 16.),
         (a.font_size, 10., 32.),
         (a.row_height, 24., 120.),
         (a.panel_width, 260., 900.),
@@ -537,5 +570,26 @@ mod tests {
         assert!(load_config(&path).is_err());
         fs::write(&path, vec![b' '; 2 * 1024 * 1024 + 1]).unwrap();
         assert!(load_config(&path).unwrap_err().contains("2 MiB"));
+    }
+    #[test]
+    fn menu_appearance_validation_and_defaults() {
+        let mut c = Config::default();
+        assert_eq!(c.appearance.menu_symbol, "network");
+        assert!(c.appearance.show_badge);
+        c.appearance.menu_icon_size = 33.;
+        assert!(validate_config(&c).is_err());
+        c.appearance.menu_icon_size = 18.;
+        c.appearance.badge_size = 3.;
+        assert!(validate_config(&c).is_err());
+        c.appearance.badge_size = 9.;
+        c.appearance.badge_position = "top".into();
+        assert!(validate_config(&c).is_err());
+        c.appearance.badge_position = "left".into();
+        c.appearance.menu_icon_path = Some(String::new());
+        assert!(validate_config(&c).is_err());
+        c.appearance.menu_icon_path = None;
+        validate_config(&c).unwrap();
+        let appearance: Appearance = serde_json::from_str("{}").unwrap();
+        assert_eq!(appearance.menu_icon_size, 18.);
     }
 }
