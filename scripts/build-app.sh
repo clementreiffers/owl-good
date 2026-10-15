@@ -9,7 +9,7 @@ if [ "$(uname -s)" != Darwin ]; then
     exit 1
 fi
 
-cargo build --release --locked
+MACOSX_DEPLOYMENT_TARGET=13.0 cargo build --release --locked
 APP="$ROOT/target/release/isDown.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$ROOT/target/release/isdown" "$APP/Contents/MacOS/isdown"
