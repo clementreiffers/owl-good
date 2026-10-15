@@ -12,7 +12,7 @@ pub enum Status {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Rules {
     pub fail: String,
     pub warning: String,
@@ -20,7 +20,7 @@ pub struct Rules {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Site {
     pub id: String,
     pub name: String,
@@ -34,7 +34,7 @@ pub struct Site {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Appearance {
     pub theme: String,
     pub menu_title: String,
@@ -52,7 +52,7 @@ pub struct Appearance {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Notifications {
     pub enabled: bool,
     pub on_warning: bool,
@@ -63,7 +63,7 @@ pub struct Notifications {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub version: u32,
     pub interval_secs: u64,
@@ -88,15 +88,15 @@ pub struct Observation {
 use std::{
     collections::HashSet,
     fs,
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
 };
 
 impl Default for Rules {
     fn default() -> Self {
         Self {
-        fail: r"(?im)^(?:Service Disruption|Security Event)$".into(),
-        warning: r"(?im)^(?:Partial Service Disruption|Degraded Performance|Maintenance|Under Maintenance|Planned Maintenance)$".into(),
+        fail: r"(?im)^(?:Service Disruption|Security Event|Major outage|Critical)$".into(),
+        warning: r"(?im)^(?:Partial Service Disruption|Degraded Performance|Degraded|Partial outage|Maintenance|Under Maintenance|Planned Maintenance)$".into(),
         success: r"(?im)^Operational$".into(),
     }
     }
@@ -227,6 +227,9 @@ pub fn aggregate(observations: &[Observation], now: u64, stale_after_secs: u64) 
     result
 }
 pub fn config_path() -> PathBuf {
+    if let Some(path) = std::env::var_os("ISDOWN_CONFIG_PATH").filter(|p| !p.is_empty()) {
+        return PathBuf::from(path);
+    }
     let base = std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
@@ -271,6 +274,11 @@ pub fn validate_config(c: &Config) -> Result<(), String> {
                 "Site URL must use HTTP(S), with a host and no embedded credentials".into(),
             );
         }
+        if site.adapter == "gitlab"
+            && (url.host_str() != Some("status.gitlab.com") || url.scheme() != "https")
+        {
+            return Err("GitLab adapter requires https://status.gitlab.com/; choose regex or statusio for other sites".into());
+        }
         if !matches!(site.adapter.as_str(), "gitlab" | "statusio" | "regex") {
             return Err(format!("Unknown adapter: {}", site.adapter));
         }
@@ -312,11 +320,15 @@ pub fn validate_config(c: &Config) -> Result<(), String> {
     Ok(())
 }
 pub fn load_config(path: &Path) -> Result<Config, String> {
-    let bytes = match fs::read(path) {
-        Ok(b) => b,
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Config::default()),
         Err(e) => return Err(e.to_string()),
     };
+    let mut bytes = Vec::new();
+    file.take(2 * 1024 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
     if bytes.len() > 2 * 1024 * 1024 {
         return Err("Configuration exceeds 2 MiB".into());
     }
@@ -459,5 +471,71 @@ mod tests {
         c.sites[0] = Site::default();
         c.appearance.font_size = f64::NAN;
         assert!(validate_config(&c).is_err());
+    }
+    #[test]
+    fn json_defaults_empty_list_and_typos() {
+        let c: Config = serde_json::from_str(r#"{"sites":[]}"#).unwrap();
+        assert_eq!(c.interval_secs, 30);
+        assert!(c.sites.is_empty());
+        validate_config(&c).unwrap();
+        assert!(serde_json::from_str::<Config>(r#"{"interval_sec":60}"#).is_err());
+        assert!(serde_json::from_str::<Config>(r#"{"appearance":{"them":"dark"}}"#).is_err());
+        let c: Config = serde_json::from_str(r#"{"version":999}"#).unwrap();
+        assert!(validate_config(&c).is_err());
+    }
+    #[test]
+    fn url_and_timing_bounds() {
+        for url in [
+            "https://user:password@example.com/",
+            "https://user@example.com/",
+            "https://",
+            "not a url",
+            "file:///etc/passwd",
+        ] {
+            let mut c = Config::default();
+            c.sites[0].adapter = "regex".into();
+            c.sites[0].url = url.into();
+            assert!(validate_config(&c).is_err(), "{url}");
+        }
+        let mut c = Config::default();
+        c.sites[0].url = "https://example.com/".into();
+        assert!(validate_config(&c).is_err());
+        for interval in [0, 4, 86401, u64::MAX] {
+            let c = Config {
+                interval_secs: interval,
+                ..Config::default()
+            };
+            assert!(validate_config(&c).is_err());
+        }
+        for timeout in [0, 121, u64::MAX] {
+            let c = Config {
+                timeout_secs: timeout,
+                ..Config::default()
+            };
+            assert!(validate_config(&c).is_err());
+        }
+        for concurrent in [0, 17, usize::MAX] {
+            let c = Config {
+                max_concurrent: concurrent,
+                ..Config::default()
+            };
+            assert!(validate_config(&c).is_err());
+        }
+        for interval in [5, 86400] {
+            let c = Config {
+                interval_secs: interval,
+                ..Config::default()
+            };
+            validate_config(&c).unwrap();
+        }
+    }
+    #[test]
+    fn truncated_and_oversized_config_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        fs::write(&path, b"{\"version\":").unwrap();
+        assert!(load_config(&path).is_err());
+        fs::write(&path, vec![b' '; 2 * 1024 * 1024 + 1]).unwrap();
+        assert!(load_config(&path).unwrap_err().contains("2 MiB"));
     }
 }

@@ -4,12 +4,15 @@ use std::{
     collections::{HashMap, HashSet},
     sync::{
         Arc,
+        atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, Sender},
     },
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+// Configuration changes are rare; keeping the public channel API owned avoids a second allocation.
+#[allow(clippy::large_enum_variant)]
 pub enum Command {
     Refresh,
     UpdateConfig(Config),
@@ -42,6 +45,7 @@ pub fn start(config: Config) -> Monitor {
 struct Completion {
     generation: u64,
     observation: Observation,
+    retry_after: Option<u64>,
 }
 fn rules(config: &Config) -> HashMap<String, Arc<CompiledRules>> {
     config
@@ -61,17 +65,30 @@ fn run(mut config: Config, commands: Receiver<Command>, observations: Sender<Obs
     let (done_tx, done_rx) = mpsc::channel::<Completion>();
     let mut compiled = rules(&config);
     let mut generation = 0u64;
-    let mut active = HashSet::new();
+    let mut active: HashMap<String, Arc<AtomicBool>> = HashMap::new();
+    let mut refresh_pending = HashSet::new();
     let mut due: HashMap<String, Instant> = HashMap::new();
     let mut errors: HashMap<String, u32> = HashMap::new();
     loop {
         // Process commands before completions so removed sites cannot reappear.
         loop {
             match commands.try_recv() {
-                Ok(Command::Shutdown) | Err(mpsc::TryRecvError::Disconnected) => return,
-                Ok(Command::Refresh) => due.clear(),
+                Ok(Command::Shutdown) | Err(mpsc::TryRecvError::Disconnected) => {
+                    for cancel in active.values() {
+                        cancel.store(true, Ordering::Relaxed);
+                    }
+                    return;
+                }
+                Ok(Command::Refresh) => {
+                    due.clear();
+                    refresh_pending.extend(active.keys().cloned());
+                }
                 Ok(Command::UpdateConfig(next)) => {
                     if isdown_core::validate_config(&next).is_ok() {
+                        for cancel in active.values() {
+                            cancel.store(true, Ordering::Relaxed);
+                        }
+                        refresh_pending.clear();
                         config = next;
                         compiled = rules(&config);
                         generation = generation.wrapping_add(1);
@@ -100,12 +117,16 @@ fn run(mut config: Config, commands: Receiver<Command>, observations: Sender<Obs
                 .find(|s| s.id == id)
                 .and_then(|s| s.interval_secs)
                 .unwrap_or(config.interval_secs);
-            let backoff = 1u64 << (*failures).min(4);
-            due.insert(
-                id,
-                Instant::now() + Duration::from_secs(interval.saturating_mul(backoff).min(86400)),
-            );
+            let delay =
+                retry_delay(interval, *failures).max(done.retry_after.unwrap_or(0).min(86400));
+            due.insert(id.clone(), Instant::now() + Duration::from_secs(delay));
+            if refresh_pending.remove(&id) {
+                due.remove(&id);
+            }
             if observations.send(done.observation).is_err() {
+                for cancel in active.values() {
+                    cancel.store(true, Ordering::Relaxed);
+                }
                 return;
             }
         }
@@ -114,7 +135,7 @@ fn run(mut config: Config, commands: Receiver<Command>, observations: Sender<Obs
                 if active.len() >= config.max_concurrent {
                     break;
                 }
-                if active.contains(&site.id)
+                if active.contains_key(&site.id)
                     || due.get(&site.id).is_some_and(|d| *d > Instant::now())
                 {
                     continue;
@@ -122,15 +143,17 @@ fn run(mut config: Config, commands: Receiver<Command>, observations: Sender<Obs
                 let Some(rule) = compiled.get(&site.id).cloned() else {
                     continue;
                 };
-                active.insert(site.id.clone());
+                let cancel = Arc::new(AtomicBool::new(false));
+                active.insert(site.id.clone(), cancel.clone());
                 let site = site.clone();
                 let tx = done_tx.clone();
                 let timeout = config.timeout_secs;
                 thread::spawn(move || {
-                    let observation = check(&site, &rule, timeout);
+                    let (observation, retry_after) = check(&site, &rule, timeout, &cancel);
                     let _ = tx.send(Completion {
                         generation,
                         observation,
+                        retry_after,
                     });
                 });
             }
@@ -140,7 +163,34 @@ fn run(mut config: Config, commands: Receiver<Command>, observations: Sender<Obs
     }
 }
 
+fn retry_delay(interval: u64, failures: u32) -> u64 {
+    interval.saturating_mul(1u64 << failures.min(4)).min(86400)
+}
+
+#[derive(Debug)]
+struct FetchFailure {
+    message: String,
+    retry_after: Option<u64>,
+}
+impl From<String> for FetchFailure {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            retry_after: None,
+        }
+    }
+}
+impl From<&str> for FetchFailure {
+    fn from(message: &str) -> Self {
+        message.to_owned().into()
+    }
+}
+
+#[cfg(test)]
 fn fetch(url: &str, timeout: u64) -> Result<String, String> {
+    fetch_cancellable(url, timeout, &AtomicBool::new(false)).map_err(|e| e.message)
+}
+fn fetch_cancellable(url: &str, timeout: u64, cancel: &AtomicBool) -> Result<String, FetchFailure> {
     let mut request = curl::easy::Easy::new();
     request.url(url).map_err(|e| e.to_string())?;
     request
@@ -154,10 +204,35 @@ fn fetch(url: &str, timeout: u64) -> Result<String, String> {
     request
         .useragent("isDown/0.1 (+macOS status monitor)")
         .map_err(|e| e.to_string())?;
+    request.progress(true).map_err(|e| e.to_string())?;
     let mut body = Vec::new();
     let mut too_large = false;
+    let mut retry_after = None;
     {
         let mut transfer = request.transfer();
+        transfer
+            .header_function(|header| {
+                if let Ok(line) = std::str::from_utf8(header) {
+                    if line.starts_with("HTTP/") {
+                        retry_after = None;
+                    }
+                    if let Some((key, value)) = line.split_once(':')
+                        && key.eq_ignore_ascii_case("retry-after")
+                    {
+                        retry_after = value.trim().parse::<u64>().ok().or_else(|| {
+                            httpdate::parse_http_date(value.trim())
+                                .ok()
+                                .and_then(|date| date.duration_since(SystemTime::now()).ok())
+                                .map(|d| d.as_secs())
+                        });
+                    }
+                }
+                true
+            })
+            .map_err(|e| e.to_string())?;
+        transfer
+            .progress_function(|_, _, _, _| !cancel.load(Ordering::Relaxed))
+            .map_err(|e| e.to_string())?;
         transfer
             .write_function(|bytes| {
                 if body.len().saturating_add(bytes.len()) > MAX_BODY {
@@ -177,24 +252,59 @@ fn fetch(url: &str, timeout: u64) -> Result<String, String> {
     }
     let code = request.response_code().map_err(|e| e.to_string())?;
     if !(200..300).contains(&code) {
-        return Err(format!("Status page HTTP {code} (service state unknown)"));
+        return Err(FetchFailure {
+            message: format!("Status page HTTP {code} (service state unknown)"),
+            retry_after: if code == 429 || code == 503 {
+                retry_after
+            } else {
+                None
+            },
+        });
     }
     String::from_utf8(body).map_err(|_| "Response is not UTF-8".into())
 }
-fn check(site: &Site, rules: &CompiledRules, timeout: u64) -> Observation {
+fn check(
+    site: &Site,
+    rules: &CompiledRules,
+    timeout: u64,
+    cancel: &AtomicBool,
+) -> (Observation, Option<u64>) {
     let url = if site.adapter == "gitlab" {
         GITLAB_API
     } else {
         &site.url
     };
-    let result = fetch(url, timeout).and_then(|body| classify(&site.adapter, &body, rules));
-    let (status, summary) = result.unwrap_or_else(|error| (Status::Unknown, error));
-    Observation {
-        site_id: site.id.clone(),
-        status,
-        summary,
-        checked_at: now(),
-    }
+    let result = fetch_cancellable(url, timeout, cancel)
+        .and_then(|body| classify(&site.adapter, &body, rules).map_err(FetchFailure::from));
+    let (status, summary, retry_after) = match result {
+        Ok((status, summary)) => (status, summary, None),
+        Err(error) => (Status::Unknown, error.message, error.retry_after),
+    };
+    (
+        Observation {
+            site_id: site.id.clone(),
+            status,
+            summary,
+            checked_at: now(),
+        },
+        retry_after,
+    )
+}
+// Validate provider schema before applying user rules. A contradictory code/label
+// cannot silently report healthy, nor can a future provider value masquerade as known.
+fn known_label(code: u64, label: &str) -> bool {
+    let aliases: &[&str] = match code {
+        100 => &["Operational"],
+        200 => &["Maintenance", "Under Maintenance", "Planned Maintenance"],
+        300 => &["Degraded Performance", "Degraded"],
+        400 => &["Partial Service Disruption", "Partial outage"],
+        500 => &["Service Disruption", "Major outage"],
+        600 => &["Security Event", "Critical"],
+        _ => &[],
+    };
+    aliases
+        .iter()
+        .any(|alias| label.eq_ignore_ascii_case(alias))
 }
 /// Interpret only current Status.io fields, never incident history or progression codes.
 pub fn classify(
@@ -244,7 +354,7 @@ pub fn classify(
             .get("status_code")
             .and_then(|v| v.as_u64())
             .ok_or("Missing current status code")?;
-        let status = if [100, 200, 300, 400, 500, 600].contains(&code) {
+        let status = if known_label(code, label) {
             rules.classify(label)
         } else {
             Status::Unknown
@@ -371,6 +481,167 @@ mod tests {
                 .recv_timeout(Duration::from_millis(250))
                 .is_err()
         );
+        monitor.commands.send(Command::Shutdown).unwrap();
+    }
+    #[test]
+    fn retry_cadence_is_bounded() {
+        assert_eq!(retry_delay(30, 0), 30);
+        assert_eq!(retry_delay(5, 2), 20);
+        assert_eq!(retry_delay(30, 100), 480);
+        assert_eq!(retry_delay(86400, 2), 86400);
+    }
+    #[test]
+    fn cancelling_request_aborts() {
+        let url = server("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".into());
+        assert!(fetch_cancellable(&url, 2, &AtomicBool::new(true)).is_err());
+    }
+    #[test]
+    fn removed_site_in_flight_never_reappears() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut buf = [0; 2048];
+            let _ = socket.read(&mut buf);
+            started_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            let _ = socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\nOperational");
+        });
+        let mut config = Config::default();
+        config.sites[0].adapter = "regex".into();
+        config.sites[0].url = url;
+        let monitor = start(config.clone());
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        config.sites.clear();
+        monitor
+            .commands
+            .send(Command::UpdateConfig(config))
+            .unwrap();
+        // Commands are consumed before completion, even when response is released immediately.
+        release_tx.send(()).unwrap();
+        assert!(
+            monitor
+                .observations
+                .recv_timeout(Duration::from_millis(400))
+                .is_err()
+        );
+        monitor.commands.send(Command::Shutdown).unwrap();
+    }
+    #[test]
+    fn custom_regex_and_historical_events() {
+        let custom = CompiledRules::new(&isdown_core::Rules {
+            fail: "^Operational$".into(),
+            warning: String::new(),
+            success: String::new(),
+        })
+        .unwrap();
+        assert_eq!(
+            classify("gitlab", &payload(100, "Operational"), &custom)
+                .unwrap()
+                .0,
+            Status::Failed
+        );
+        assert_eq!(
+            classify("gitlab", &payload(100, "Operational"), &rules())
+                .unwrap()
+                .0,
+            Status::Healthy
+        );
+        for (code, label, want) in [
+            (300, "Degraded", Status::Warning),
+            (400, "Partial outage", Status::Warning),
+            (500, "Major outage", Status::Failed),
+            (600, "Critical", Status::Failed),
+        ] {
+            assert_eq!(
+                classify("gitlab", &payload(code, label), &rules())
+                    .unwrap()
+                    .0,
+                want
+            );
+        }
+    }
+    #[test]
+    #[ignore = "Opt-in live contract verification: requires Internet"]
+    fn live_gitlab_contract() {
+        let result = fetch(GITLAB_API, 10).unwrap();
+        let (_, summary) = classify("gitlab", &result, &rules()).unwrap();
+        assert!(!summary.is_empty());
+    }
+    #[test]
+    fn retry_after_preserved_for_scheduler() {
+        let url = server(
+            "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 120\r\nContent-Length: 0\r\n\r\n"
+                .into(),
+        );
+        let error = fetch_cancellable(&url, 2, &AtomicBool::new(false)).unwrap_err();
+        assert_eq!(error.retry_after, Some(120));
+    }
+    #[test]
+    fn contradictory_code_label_is_unknown() {
+        for (code, label) in [
+            (500, "Operational"),
+            (100, "Service Disruption"),
+            (300, "Maintenance"),
+            (200, "Investigating"),
+        ] {
+            assert_eq!(
+                classify("gitlab", &payload(code, label), &rules())
+                    .unwrap()
+                    .0,
+                Status::Unknown
+            );
+        }
+    }
+    #[test]
+    fn concurrency_bound_and_refresh_do_not_overlap_site() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let (accepted_tx, accepted_rx) = mpsc::channel();
+        thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut socket, _) = listener.accept().unwrap();
+                let (release_tx, release_rx) = mpsc::channel();
+                accepted_tx.send(release_tx).unwrap();
+                thread::spawn(move || {
+                    let mut request = [0; 2048];
+                    let _ = socket.read(&mut request);
+                    release_rx.recv().unwrap();
+                    let _ = socket
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\nOperational");
+                });
+            }
+        });
+        let mut config = Config {
+            max_concurrent: 1,
+            ..Config::default()
+        };
+        config.sites[0].url = url;
+        config.sites[0].adapter = "regex".into();
+        let monitor = start(config);
+        let release_first = accepted_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        monitor.commands.send(Command::Refresh).unwrap();
+        assert!(
+            accepted_rx
+                .recv_timeout(Duration::from_millis(250))
+                .is_err(),
+            "refresh overlapped the active request"
+        );
+        release_first.send(()).unwrap();
+        let release_second = accepted_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("manual refresh must run after completion");
+        release_second.send(()).unwrap();
+        monitor
+            .observations
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap();
+        monitor
+            .observations
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap();
         monitor.commands.send(Command::Shutdown).unwrap();
     }
 }
